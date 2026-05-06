@@ -22,6 +22,8 @@ internal enum UdpPacketKind : byte
 
 internal sealed class RemoteAudioSession : IAsyncDisposable
 {
+	private const int HandshakeMaxBytes = 64 * 1024;
+
 	private static readonly Encoding WireEncoding = new UTF8Encoding(false);
 	private readonly TcpClient _tcp;
 	private readonly StreamWriter _writer;
@@ -75,13 +77,13 @@ internal sealed class RemoteAudioSession : IAsyncDisposable
 			AutoFlush = true,
 			NewLine = "\n",
 		};
-		using var reader = new StreamReader(stream, WireEncoding, leaveOpen: true);
 
 		var roleText = role == ConnectionRole.Publisher ? "publisher" : "subscriber";
 		await writer.WriteLineAsync(JsonSerializer.Serialize(new { role = roleText, key }));
 
-		var responseLine = await reader.ReadLineAsync(cancellationToken)
-			?? throw new IOException("The audio server closed the TCP connection during handshake.");
+		// Bounded line read so a hostile server cannot stream unlimited bytes without a newline
+		// and exhaust our memory.
+		var responseLine = await ReadLineBoundedAsync(stream, HandshakeMaxBytes, cancellationToken);
 		var response = JsonSerializer.Deserialize<HandshakeResponse>(responseLine)
 			?? throw new IOException("The audio server returned an empty handshake response.");
 
@@ -91,9 +93,14 @@ internal sealed class RemoteAudioSession : IAsyncDisposable
 		}
 
 		var sessionId = ParseSessionId(response.SessionId);
-		var udpPort = response.UdpPort > 0 ? response.UdpPort : port;
-		var maxPayload = response.UdpAudioPayloadMaxBytes > 0 ? response.UdpAudioPayloadMaxBytes : 1200;
-		var tcpHeartbeatMs = response.TcpHeartbeatIntervalMs > 0 ? response.TcpHeartbeatIntervalMs : 5000;
+		var udpPort = response.UdpPort > 0 && response.UdpPort <= 65535 ? response.UdpPort : port;
+		var rawMaxPayload = response.UdpAudioPayloadMaxBytes > 0 ? response.UdpAudioPayloadMaxBytes : 1200;
+		// Cap the server's per-packet limit to a single MTU. A hostile/buggy server could otherwise force
+		// large allocations on every send.
+		var maxPayload = Math.Clamp(rawMaxPayload, 64, 1500);
+		var rawTcpHeartbeatMs = response.TcpHeartbeatIntervalMs > 0 ? response.TcpHeartbeatIntervalMs : 5000;
+		// Floor the TCP heartbeat interval. A server returning 0/1 would spin our heartbeat loop tight.
+		var tcpHeartbeatMs = Math.Max(500, rawTcpHeartbeatMs);
 		var udpTimeoutMs = response.UdpSessionTimeoutMs > 0 ? response.UdpSessionTimeoutMs : 15000;
 
 		var udp = new UdpClient();
@@ -220,6 +227,37 @@ internal sealed class RemoteAudioSession : IAsyncDisposable
 		{
 			_udpSendLock.Release();
 		}
+	}
+
+	private static async Task<string> ReadLineBoundedAsync(NetworkStream stream, int maxBytes, CancellationToken cancellationToken)
+	{
+		var buffer = new byte[maxBytes];
+		var read = 0;
+		var single = new byte[1];
+
+		while (read < maxBytes)
+		{
+			var n = await stream.ReadAsync(single.AsMemory(0, 1), cancellationToken);
+			if (n == 0)
+			{
+				throw new IOException("The audio server closed the TCP connection during handshake.");
+			}
+
+			if (single[0] == (byte)'\n')
+			{
+				var length = read;
+				if (length > 0 && buffer[length - 1] == (byte)'\r')
+				{
+					length--;
+				}
+
+				return WireEncoding.GetString(buffer, 0, length);
+			}
+
+			buffer[read++] = single[0];
+		}
+
+		throw new IOException($"Audio server handshake response exceeded {maxBytes} bytes.");
 	}
 
 	private static byte[] ParseSessionId(string? value)
