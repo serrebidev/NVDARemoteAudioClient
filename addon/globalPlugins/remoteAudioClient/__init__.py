@@ -250,9 +250,12 @@ class AudioClientProcess:
 		try:
 			startupinfo = subprocess.STARTUPINFO()
 			startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+			# stdin is a pipe so we can signal a graceful shutdown by closing it.
+			# The helper watches stdin and treats EOF (or any byte) as "shut down,
+			# release WASAPI handles, close sockets, exit".
 			self._process = subprocess.Popen(
 				args,
-				stdin=subprocess.DEVNULL,
+				stdin=subprocess.PIPE,
 				stdout=subprocess.PIPE,
 				stderr=subprocess.STDOUT,
 				text=True,
@@ -280,9 +283,26 @@ class AudioClientProcess:
 			return
 		self._stopping = True
 		if process.poll() is None:
+			# Graceful shutdown: close stdin, helper sees EOF and tears the session down,
+			# releasing WASAPI process-loopback handles and closing TCP/UDP cleanly.
+			# Only TerminateProcess if it doesn't exit on its own.
 			try:
-				process.terminate()
-				process.wait(timeout=2)
+				if process.stdin is not None:
+					try:
+						process.stdin.close()
+					except Exception:
+						pass
+				try:
+					process.wait(timeout=2)
+				except subprocess.TimeoutExpired:
+					try:
+						process.terminate()
+						process.wait(timeout=2)
+					except Exception:
+						try:
+							process.kill()
+						except Exception:
+							pass
 			except Exception:
 				try:
 					process.kill()

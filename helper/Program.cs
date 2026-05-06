@@ -25,6 +25,11 @@ internal static class Program
 				cts.Cancel();
 			};
 
+			// Watch the parent process via stdin. When NVDA closes stdin (or writes any
+			// byte) we treat it as a graceful shutdown request, so the session's
+			// IAsyncDisposable.DisposeAsync runs and WASAPI / sockets are released cleanly.
+			_ = Task.Run(() => WatchParentShutdownAsync(cts));
+
 			await using var session = await RemoteAudioSession.ConnectAsync(
 				options.Host,
 				options.Port,
@@ -67,6 +72,47 @@ internal static class Program
 				["type"] = ex.GetType().Name,
 			});
 			return 1;
+		}
+	}
+
+	private static async Task WatchParentShutdownAsync(CancellationTokenSource cts)
+	{
+		try
+		{
+			using var stdin = Console.OpenStandardInput();
+			var buffer = new byte[16];
+			while (!cts.IsCancellationRequested)
+			{
+				int read;
+				try
+				{
+					read = await stdin.ReadAsync(buffer.AsMemory(), cts.Token);
+				}
+				catch (OperationCanceledException)
+				{
+					return;
+				}
+				catch (IOException)
+				{
+					// Pipe broke (parent died). Treat as shutdown.
+					read = 0;
+				}
+
+				if (read == 0)
+				{
+					// EOF on stdin: NVDA closed the pipe to ask us to stop gracefully.
+					cts.Cancel();
+					return;
+				}
+
+				// Any byte from the parent is also a stop signal.
+				cts.Cancel();
+				return;
+			}
+		}
+		catch
+		{
+			// Best effort. If this path fails, the parent can still TerminateProcess us.
 		}
 	}
 }
