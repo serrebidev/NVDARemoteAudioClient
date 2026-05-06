@@ -442,6 +442,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			self._receiveItem = self._menu.AppendCheckItem(wx.ID_ANY, _("Receive remote audio"))
 			self._sendItem = self._menu.AppendCheckItem(wx.ID_ANY, _("Send this computer's audio"))
 			self._menu.AppendSeparator()
+			reconnectItem = self._menu.Append(wx.ID_ANY, _("Reconnect audio"))
 			stopItem = self._menu.Append(wx.ID_ANY, _("Disconnect audio"))
 			statusItem = self._menu.Append(wx.ID_ANY, _("Audio status"))
 			self._menu.AppendSeparator()
@@ -451,6 +452,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onReceive, self._receiveItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onSend, self._sendItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onReconnect, reconnectItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onStop, stopItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onStatus, statusItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onInstallServer, installItem)
@@ -536,6 +538,24 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 	def onStop(self, event):
 		self._stopAndAnnounce()
+
+	def onReconnect(self, event):
+		# Pick a role: prefer the running role, then last auto role, then resolved startup mode.
+		role = self._client.currentRole() or self._autoRole
+		if role is None:
+			self._config = _loadConfig()
+			candidate = _resolveStartupMode(self._config)
+			if candidate in ("subscriber", "publisher"):
+				role = candidate
+		if role is None:
+			ui.message(_("Pick Receive remote audio or Send this computer's audio first"))
+			return
+		self._config = _loadConfig()
+		self._manualStop = False
+		self._autoRole = role
+		self._client.start(role, self._config)
+		self._updateMenuChecks()
+		ui.message(_("Reconnecting"))
 
 	def onStatus(self, event):
 		ui.message(self._client.statusMessage())

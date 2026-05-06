@@ -58,7 +58,10 @@ internal sealed class RemoteAudioSession : IAsyncDisposable
 		SessionIdHex = Convert.ToHexString(sessionId).ToLowerInvariant();
 		_lifetimeCts = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
 		_tcpHeartbeatTask = Task.Run(() => TcpHeartbeatLoopAsync(tcpHeartbeatIntervalMs, _lifetimeCts.Token));
-		_udpHeartbeatTask = Task.Run(() => UdpHeartbeatLoopAsync(Math.Max(1000, udpSessionTimeoutMs / 3), _lifetimeCts.Token));
+		// Heartbeat at a third of the server's UDP timeout, but no slower than every 3 seconds.
+		// At least one heartbeat per second-third covers most NAT/path drop scenarios.
+		var udpHeartbeatIntervalMs = Math.Min(3000, Math.Max(500, udpSessionTimeoutMs / 3));
+		_udpHeartbeatTask = Task.Run(() => UdpHeartbeatLoopAsync(udpHeartbeatIntervalMs, _lifetimeCts.Token));
 	}
 
 	public static async Task<RemoteAudioSession> ConnectAsync(
@@ -199,20 +202,70 @@ internal sealed class RemoteAudioSession : IAsyncDisposable
 
 	private async Task TcpHeartbeatLoopAsync(int intervalMs, CancellationToken cancellationToken)
 	{
-		while (!cancellationToken.IsCancellationRequested)
+		try
 		{
-			await Task.Delay(intervalMs, cancellationToken);
-			await _writer.WriteLineAsync("""{"type":"heartbeat"}""");
+			while (!cancellationToken.IsCancellationRequested)
+			{
+				await Task.Delay(intervalMs, cancellationToken);
+				await _writer.WriteLineAsync("""{"type":"heartbeat"}""");
+			}
+		}
+		catch (OperationCanceledException)
+		{
+		}
+		catch (Exception ex)
+		{
+			JsonLog.Write(
+				"error",
+				"TCP heartbeat failed: " + ex.Message,
+				new Dictionary<string, object?> { ["type"] = ex.GetType().Name });
+			TriggerSessionTeardown();
 		}
 	}
 
 	private async Task UdpHeartbeatLoopAsync(int intervalMs, CancellationToken cancellationToken)
 	{
 		var heartbeat = UdpPacket.CreateControl(UdpPacketKind.Heartbeat, _sessionId);
-		while (!cancellationToken.IsCancellationRequested)
+		var register = UdpPacket.CreateControl(UdpPacketKind.Register, _sessionId);
+		var sendCount = 0;
+
+		try
 		{
-			await Task.Delay(intervalMs, cancellationToken);
-			await SendUdpAsync(heartbeat, cancellationToken);
+			while (!cancellationToken.IsCancellationRequested)
+			{
+				await Task.Delay(intervalMs, cancellationToken);
+				await SendUdpAsync(heartbeat, cancellationToken);
+				sendCount++;
+				// Roughly every 15s (5 cycles at 3s) re-send a UDP register packet so the server
+				// refreshes our session even if individual heartbeats were dropped by NAT/path.
+				if (sendCount % 5 == 0)
+				{
+					await SendUdpAsync(register, cancellationToken);
+				}
+			}
+		}
+		catch (OperationCanceledException)
+		{
+		}
+		catch (Exception ex)
+		{
+			JsonLog.Write(
+				"error",
+				"UDP heartbeat failed: " + ex.Message,
+				new Dictionary<string, object?> { ["type"] = ex.GetType().Name });
+			TriggerSessionTeardown();
+		}
+	}
+
+	private void TriggerSessionTeardown()
+	{
+		try
+		{
+			_lifetimeCts.Cancel();
+		}
+		catch (ObjectDisposedException)
+		{
+			// Already disposed; nothing to do.
 		}
 	}
 
