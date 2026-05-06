@@ -1,0 +1,31 @@
+# .NET build outputs
+helper/bin/
+helper/obj/
+
+# Local publish output
+publish/
+
+# Helper EXE staged into the add-on by build.ps1
+addon/bin/
+
+# Packaged add-ons (release assets, built by build.ps1)
+*.nvda-addon
+*.zip
+
+# Local helper smoke-test artifacts
+helper/*.out.jsonl
+helper/*.err.txt
+helper/test-*.out
+helper/*-test.out.jsonl
+helper/*-test.err.txt
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# OS / IDE
+.vs/
+.vscode/
+*.user
+Thumbs.db
+.DS_Store

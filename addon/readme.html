@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NVDA Remote Audio Client</title>
+</head>
+<body>
+<h1>NVDA Remote Audio Client</h1>
+<p>This add-on connects to <a href="https://github.com/haitun001/NVDARemoteAudioServer">NVDARemoteAudioServer</a> to send or receive system audio between two Windows machines. NVDA speech itself stays on NVDA Remote; this add-on only carries everything else (music, games, Discord, browsers, etc.).</p>
+
+<h2>First-time setup</h2>
+<ol>
+  <li>Install this add-on on both machines.</li>
+  <li>Run NVDARemoteAudioServer somewhere reachable by both. Whatever machine the server is on is the "send" side.</li>
+  <li>On both machines, open <strong>NVDA menu &gt; Preferences &gt; Settings &gt; NVDA Remote Audio</strong>.</li>
+  <li>Set the same <strong>Host</strong>, <strong>Port</strong> (6838 by default), and <strong>Key</strong> on both.</li>
+  <li>Restart NVDA, or use the Tools menu items to connect manually.</li>
+</ol>
+
+<h2>How "Automatic" startup works</h2>
+<p>If <code>C:\NVDARemoteAudioServer\NVDARemoteAudioServer.exe</code> exists on a machine, that machine sends. Otherwise it receives. Override this by changing <strong>Startup action</strong> in settings.</p>
+
+<h2>Latency profiles</h2>
+<ul>
+  <li><strong>LAN</strong> — lowest buffer (60/60/300 ms).</li>
+  <li><strong>Tailscale</strong> — small extra buffer (90/80/450 ms).</li>
+  <li><strong>Internet</strong> — most stable low-latency buffer (150/120/800 ms).</li>
+  <li><strong>Automatic</strong> — picked from the host you set: LAN for private/loopback IPs, Tailscale for 100.64.0.0/10 or *.ts.net, Internet for anything else.</li>
+</ul>
+
+<h2>Privacy</h2>
+<p>Publisher mode uses Windows process-loopback exclusion to drop NVDA from the captured audio, so NVDA speech and NVDA tones are not sent by this add-on. Other app audio is sent unencrypted over UDP &mdash; protect the link yourself (LAN, VPN, or Tailscale).</p>
+</body>
+</html>
