@@ -36,7 +36,9 @@ DEFAULT_CONFIG = {
 STARTUP_MODES = ("auto", "disabled", "subscriber", "publisher")
 LATENCY_PROFILES = ("auto", "lan", "tailscale", "internet")
 LATENCY_SETTINGS = {
-	"lan": {"prebufferMs": 60, "outputLatencyMs": 60, "bufferMs": 300},
+	# LAN jitter is normally sub-millisecond. 30 ms of prebuffer = 2 wire packets
+	# (15 ms each), enough to absorb a single late packet without underrun.
+	"lan": {"prebufferMs": 30, "outputLatencyMs": 40, "bufferMs": 200},
 	"tailscale": {"prebufferMs": 90, "outputLatencyMs": 80, "bufferMs": 450},
 	"internet": {"prebufferMs": 150, "outputLatencyMs": 120, "bufferMs": 800},
 }

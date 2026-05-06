@@ -39,7 +39,7 @@ Wire format: 48 kHz stereo Opus, 15 ms packets (3 × 5 ms frames repacketized), 
 
 | Profile | Picked when host is | Prebuffer | Output latency | Buffer cap |
 |---|---|---|---|---|
-| LAN | private/loopback IP | 60 ms | 60 ms | 300 ms |
+| LAN | private/loopback IP | 30 ms | 40 ms | 200 ms |
 | Tailscale | 100.64.0.0/10 or `*.ts.net` | 90 ms | 80 ms | 450 ms |
 | Internet | anything else | 150 ms | 120 ms | 800 ms |
 
