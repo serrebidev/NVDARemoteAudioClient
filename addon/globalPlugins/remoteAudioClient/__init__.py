@@ -355,6 +355,9 @@ class AudioClientProcess:
 		if message:
 			self._lastMessage = message
 		eventName = event.get("event")
+		# Echo every helper event into NVDA's log so we can debug timing without
+		# having to instrument the addon on the user's side.
+		log.info("remoteAudio helper: %s", line)
 		if eventName == "connected":
 			if event.get("role") == "subscriber":
 				wx.CallAfter(ui.message, _("Remote audio connected for receiving"))
@@ -570,12 +573,32 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		if role is None:
 			ui.message(_("Pick Receive remote audio or Send this computer's audio first"))
 			return
+		# Snapshot config now so the worker doesn't race with another menu click.
 		self._config = _loadConfig()
 		self._manualStop = False
 		self._autoRole = role
-		self._client.start(role, self._config)
-		self._updateMenuChecks()
 		ui.message(_("Reconnecting"))
+		log.info("remoteAudio reconnect requested; role=%s", role)
+		t0 = time.monotonic()
+		config = dict(self._config)
+		threading.Thread(
+			target=self._reconnectWorker,
+			args=(role, config, t0),
+			name="remoteAudioReconnect",
+			daemon=True,
+		).start()
+
+	def _reconnectWorker(self, role, config, t0):
+		try:
+			self._client.start(role, config)
+		except Exception:
+			log.error("remoteAudio reconnect failed", exc_info=True)
+			return
+		log.info(
+			"remoteAudio reconnect: helper respawned in %.2f s",
+			time.monotonic() - t0,
+		)
+		wx.CallAfter(self._updateMenuChecks)
 
 	def onStatus(self, event):
 		ui.message(self._client.statusMessage())
