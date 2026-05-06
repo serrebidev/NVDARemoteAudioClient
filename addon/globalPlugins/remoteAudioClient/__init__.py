@@ -207,6 +207,12 @@ class AudioClientProcess:
 	def isRunning(self):
 		return self._process is not None and self._process.poll() is None
 
+	def currentRole(self):
+		"""Return 'subscriber', 'publisher', or None if not running."""
+		if not self.isRunning():
+			return None
+		return self._role
+
 	def start(self, role, config):
 		self.stop()
 		if not os.path.exists(HELPER_PATH):
@@ -407,6 +413,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._client = AudioClientProcess(self._onClientExit)
 		self._menu = None
 		self._menuRoot = None
+		self._receiveItem = None
+		self._sendItem = None
 		self._autoRole = None
 		self._autoRetryCall = None
 		self._manualStop = False
@@ -431,8 +439,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		try:
 			toolsMenu = gui.mainFrame.sysTrayIcon.toolsMenu
 			self._menu = wx.Menu()
-			receiveItem = self._menu.Append(wx.ID_ANY, _("Receive remote audio"))
-			sendItem = self._menu.Append(wx.ID_ANY, _("Send this computer's audio"))
+			self._receiveItem = self._menu.AppendCheckItem(wx.ID_ANY, _("Receive remote audio"))
+			self._sendItem = self._menu.AppendCheckItem(wx.ID_ANY, _("Send this computer's audio"))
 			self._menu.AppendSeparator()
 			stopItem = self._menu.Append(wx.ID_ANY, _("Disconnect audio"))
 			statusItem = self._menu.Append(wx.ID_ANY, _("Audio status"))
@@ -441,16 +449,28 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			firewallItem = self._menu.Append(wx.ID_ANY, _("Add firewall rules for audio server..."))
 			settingsItem = self._menu.Append(wx.ID_ANY, _("Audio settings..."))
 
-			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onReceive, receiveItem)
-			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onSend, sendItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onReceive, self._receiveItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onSend, self._sendItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onStop, stopItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onStatus, statusItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onInstallServer, installItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onAddFirewallRules, firewallItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onSettings, settingsItem)
 			self._menuRoot = toolsMenu.AppendSubMenu(self._menu, _("NVDA Remote Audio"), _("NVDA Remote Audio"))
+			self._updateMenuChecks()
 		except Exception:
 			log.error("Failed to create remote audio menu", exc_info=True)
+
+	def _updateMenuChecks(self):
+		"""Sync the Receive/Send check marks with the current helper role."""
+		if self._receiveItem is None or self._sendItem is None:
+			return
+		role = self._client.currentRole()
+		try:
+			self._receiveItem.Check(role == "subscriber")
+			self._sendItem.Check(role == "publisher")
+		except Exception:
+			log.debug("Failed to update remote audio menu checks", exc_info=True)
 
 	def _destroyMenu(self):
 		try:
@@ -460,16 +480,26 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			if self._menu is not None:
 				self._menu.Destroy()
 				self._menu = None
+			self._receiveItem = None
+			self._sendItem = None
 		except Exception:
 			log.debug("Failed to destroy remote audio menu", exc_info=True)
 
 	def onReceive(self, event):
+		# Toggle: clicking the checked item disconnects.
+		if self._client.currentRole() == "subscriber":
+			self._stopAndAnnounce()
+			return
 		self._config = _loadConfig()
 		self._manualStop = False
 		self._autoRole = None
 		self._client.start("subscriber", self._config)
+		self._updateMenuChecks()
 
 	def onSend(self, event):
+		if self._client.currentRole() == "publisher":
+			self._stopAndAnnounce()
+			return
 		self._config = _loadConfig()
 		self._manualStop = False
 		self._autoRole = None
@@ -477,12 +507,26 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			server_installer.offer_install(gui.mainFrame, on_done=self._onSendInstallDone)
 			return
 		self._client.start("publisher", self._config)
+		self._updateMenuChecks()
 
 	def _onSendInstallDone(self, success):
 		if not success:
+			self._updateMenuChecks()
 			return
 		self._config = _loadConfig()
 		self._client.start("publisher", self._config)
+		self._updateMenuChecks()
+
+	def _stopAndAnnounce(self):
+		wasRunning = self._client.isRunning()
+		self._manualStop = True
+		self._autoRole = None
+		if self._autoRetryCall is not None:
+			self._autoRetryCall.Stop()
+			self._autoRetryCall = None
+		self._client.stop()
+		self._updateMenuChecks()
+		ui.message(_("Remote audio disconnected") if wasRunning else _("Remote audio is not connected"))
 
 	def onInstallServer(self, event):
 		server_installer.offer_install(gui.mainFrame)
@@ -491,14 +535,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		server_installer.add_firewall_rules_only(gui.mainFrame)
 
 	def onStop(self, event):
-		wasRunning = self._client.isRunning()
-		self._manualStop = True
-		self._autoRole = None
-		if self._autoRetryCall is not None:
-			self._autoRetryCall.Stop()
-			self._autoRetryCall = None
-		self._client.stop()
-		ui.message(_("Remote audio disconnected") if wasRunning else _("Remote audio is not connected"))
+		self._stopAndAnnounce()
 
 	def onStatus(self, event):
 		ui.message(self._client.statusMessage())
@@ -516,8 +553,11 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._manualStop = False
 		self._autoRole = mode
 		self._client.start(mode, self._config)
+		self._updateMenuChecks()
 
 	def _onClientExit(self, role, exitCode, stopping):
+		# The helper has already cleared its role by the time this fires; refresh the menu.
+		self._updateMenuChecks()
 		if stopping or self._manualStop or not self._autoRole or role != self._autoRole:
 			return
 		self._config = _loadConfig()
@@ -537,3 +577,4 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			return
 		self._autoRole = role
 		self._client.start(role, self._config)
+		self._updateMenuChecks()
