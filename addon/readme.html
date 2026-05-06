@@ -11,11 +11,13 @@
 <h2>First-time setup</h2>
 <ol>
   <li>Install this add-on on both machines.</li>
-  <li>Run NVDARemoteAudioServer somewhere reachable by both. Whatever machine the server is on is the "send" side.</li>
+  <li>On the machine that should send audio: open <strong>NVDA menu &gt; Tools &gt; NVDA Remote Audio &gt; Install audio server (this machine sends audio)...</strong> The add-on downloads the latest <a href="https://github.com/haitun001/NVDARemoteAudioServer">NVDARemoteAudioServer</a> from GitHub, installs it, starts it, and registers a per-user logon task so it survives reboots. It will also prompt for UAC to add Windows Firewall inbound allow rules for TCP and UDP port 6838. If you decline UAC, run the helper menu item <em>Add firewall rules for audio server...</em> later, or open the port manually.</li>
   <li>On both machines, open <strong>NVDA menu &gt; Preferences &gt; Settings &gt; NVDA Remote Audio</strong>.</li>
   <li>Set the same <strong>Host</strong>, <strong>Port</strong> (6838 by default), and <strong>Key</strong> on both.</li>
-  <li>Restart NVDA, or use the Tools menu items to connect manually.</li>
+  <li>Restart NVDA, or use the Tools menu items to connect manually. If you skipped step 2, picking <strong>Send this computer's audio</strong> will offer to install the server then.</li>
 </ol>
+
+<p>Inbound TCP and UDP <strong>port 6838</strong> on the sending machine must be reachable by the receiving machine. Windows Firewall may prompt the first time the server runs, or you can pre-allow it.</p>
 
 <h2>How "Automatic" startup works</h2>
 <p>If <code>C:\NVDARemoteAudioServer\NVDARemoteAudioServer.exe</code> exists on a machine, that machine sends. Otherwise it receives. Override this by changing <strong>Startup action</strong> in settings.</p>

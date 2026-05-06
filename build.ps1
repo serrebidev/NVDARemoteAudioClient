@@ -45,6 +45,9 @@ $tempZip = Join-Path $repoRoot ("remoteAudioClient-{0}.zip" -f $version)
 Remove-Item -LiteralPath $packagePath, $tempZip -ErrorAction SilentlyContinue
 
 Write-Host "Packaging add-on..."
+# Strip any local __pycache__ directories so we don't ship .pyc compiled with the wrong Python version.
+Get-ChildItem -LiteralPath $addonDir -Recurse -Directory -Filter '__pycache__' -Force -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $addonDir '*') -DestinationPath $tempZip -CompressionLevel Optimal -Force
 Move-Item -LiteralPath $tempZip -Destination $packagePath -Force
 

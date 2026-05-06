@@ -12,16 +12,14 @@ The add-on is just a launcher and a settings UI. The helper does the audio work 
 
 ## Install (end users)
 
-You need both pieces, on both computers:
-
-1. Install [NVDARemoteAudioServer](https://github.com/haitun001/NVDARemoteAudioServer) on **whichever machine should send audio**. It listens on TCP+UDP port 6838.
-2. On **both** machines, download `remoteAudioClient-<version>.nvda-addon` from [Releases](https://github.com/serrebidev/NVDARemoteAudioClient/releases) and open it. NVDA installs it.
-3. Restart NVDA.
+1. On **both** machines, download `remoteAudioClient-<version>.nvda-addon` from [Releases](https://github.com/serrebidev/NVDARemoteAudioClient/releases) and open it. NVDA installs it.
+2. Restart NVDA.
+3. On the machine that will **send** audio: open `NVDA menu > Tools > NVDA Remote Audio > Install audio server (this machine sends audio)...`. The add-on downloads [NVDARemoteAudioServer](https://github.com/haitun001/NVDARemoteAudioServer) from GitHub, installs it under `C:\NVDARemoteAudioServer\` (or `%LOCALAPPDATA%\NVDARemoteAudioServer\` if the first isn't writable), starts it, registers a per-user logon task so it auto-starts at sign-in, and prompts for UAC to add Windows Firewall inbound allow rules for TCP+UDP 6838. Decline UAC and the rest still installs; pick `Add firewall rules for audio server...` later if you want to retry.
 4. On **both** machines, open `NVDA menu > Preferences > Settings > NVDA Remote Audio` and set:
-   - **Server host** — IP/hostname of the machine running NVDARemoteAudioServer.
+   - **Server host** — IP/hostname of the machine running the server.
    - **Audio port** — 6838 (default).
    - **Key** — same string on both sides. **Required, no default.**
-5. Restart NVDA again, or pick `NVDA menu > Tools > NVDA Remote Audio > Receive remote audio` (client) / `Send this computer's audio` (server).
+5. Restart NVDA, or pick `Receive remote audio` (client) / `Send this computer's audio` (server) from the Tools menu. Picking `Send` on a machine without the server installed offers to install it on the spot.
 
 The add-on does not change anything in NVDA Remote. Use NVDA Remote on its usual port (6837) the same way you always have.
 

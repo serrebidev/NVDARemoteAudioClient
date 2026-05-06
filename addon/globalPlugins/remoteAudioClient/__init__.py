@@ -15,6 +15,8 @@ import wx
 from gui import guiHelper
 from logHandler import log
 
+from . import server_installer
+
 addonHandler.initTranslation()
 
 ADDON = addonHandler.getCodeAddon()
@@ -91,7 +93,7 @@ def _startupModeLabel(mode):
 
 
 def _isAudioServerMachine():
-	return os.path.exists(r"C:\NVDARemoteAudioServer\NVDARemoteAudioServer.exe")
+	return server_installer.is_installed()
 
 
 def _resolveStartupMode(config):
@@ -434,12 +436,17 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			self._menu.AppendSeparator()
 			stopItem = self._menu.Append(wx.ID_ANY, _("Disconnect audio"))
 			statusItem = self._menu.Append(wx.ID_ANY, _("Audio status"))
+			self._menu.AppendSeparator()
+			installItem = self._menu.Append(wx.ID_ANY, _("Install audio server (this machine sends audio)..."))
+			firewallItem = self._menu.Append(wx.ID_ANY, _("Add firewall rules for audio server..."))
 			settingsItem = self._menu.Append(wx.ID_ANY, _("Audio settings..."))
 
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onReceive, receiveItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onSend, sendItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onStop, stopItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onStatus, statusItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onInstallServer, installItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onAddFirewallRules, firewallItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onSettings, settingsItem)
 			self._menuRoot = toolsMenu.AppendSubMenu(self._menu, _("NVDA Remote Audio"), _("NVDA Remote Audio"))
 		except Exception:
@@ -466,7 +473,22 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._config = _loadConfig()
 		self._manualStop = False
 		self._autoRole = None
+		if not server_installer.is_installed():
+			server_installer.offer_install(gui.mainFrame, on_done=self._onSendInstallDone)
+			return
 		self._client.start("publisher", self._config)
+
+	def _onSendInstallDone(self, success):
+		if not success:
+			return
+		self._config = _loadConfig()
+		self._client.start("publisher", self._config)
+
+	def onInstallServer(self, event):
+		server_installer.offer_install(gui.mainFrame)
+
+	def onAddFirewallRules(self, event):
+		server_installer.add_firewall_rules_only(gui.mainFrame)
 
 	def onStop(self, event):
 		wasRunning = self._client.isRunning()

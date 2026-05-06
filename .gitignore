@@ -19,9 +19,10 @@ helper/test-*.out
 helper/*-test.out.jsonl
 helper/*-test.err.txt
 
-# Python bytecode
+# Python bytecode (NVDA recompiles on its own version)
 __pycache__/
 *.pyc
+addon/globalPlugins/**/__pycache__/
 
 # OS / IDE
 .vs/
