@@ -4,6 +4,7 @@ import ipaddress
 import subprocess
 import threading
 import time
+import unicodedata
 
 import addonHandler
 import core
@@ -32,6 +33,26 @@ DEFAULT_CONFIG = {
 	"startupMode": "auto",
 	"latencyProfile": "auto",
 }
+
+# Mirrors NVDARemoteAudioServer's server-side rules so we surface a friendly
+# message before the helper EXE even starts. Server source: validate_key() in
+# https://github.com/haitun001/NVDARemoteAudioServer src/protocol.rs.
+MAX_KEY_BYTES = 128
+
+
+def _validateKey(key):
+	"""Return a translated error string if key violates server rules, else None.
+
+	An empty string is treated as "not set" by callers and is reported as such.
+	"""
+	if not isinstance(key, str) or not key:
+		return _("Remote audio key is not set")
+	if any(unicodedata.category(c) == "Cc" for c in key):
+		return _("Remote audio key contains control characters (such as tab or newline)")
+	if len(key.encode("utf-8")) > MAX_KEY_BYTES:
+		return _("Remote audio key is too long; must be at most {n} UTF-8 bytes").format(n=MAX_KEY_BYTES)
+	return None
+
 
 STARTUP_MODES = ("auto", "disabled", "subscriber", "publisher")
 LATENCY_PROFILES = ("auto", "lan", "tailscale", "internet")
@@ -220,8 +241,9 @@ class AudioClientProcess:
 		if not os.path.exists(HELPER_PATH):
 			ui.message(_("Remote audio helper is missing"))
 			return
-		if not str(config.get("key") or "").strip():
-			ui.message(_("Remote audio key is not set"))
+		keyError = _validateKey(str(config.get("key") or "").strip())
+		if keyError is not None:
+			ui.message(keyError)
 			return
 
 		self._role = role
@@ -418,6 +440,18 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 		)
 		self.startupChoice.SetSelection(list(STARTUP_MODES).index(self._config["startupMode"]))
 
+	def isValid(self):
+		# Empty key is allowed at save time so the user can come back later, but
+		# anything non-empty must already obey the server's key rules.
+		key = self.keyCtrl.GetValue()
+		if key:
+			err = _validateKey(key)
+			if err is not None:
+				gui.messageBox(err, _("NVDA Remote Audio"), wx.OK | wx.ICON_ERROR)
+				self.keyCtrl.SetFocus()
+				return False
+		return super().isValid()
+
 	def onSave(self):
 		_saveConfig({
 			"host": self.hostCtrl.GetValue(),
@@ -613,7 +647,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		mode = _resolveStartupMode(self._config)
 		if mode == "disabled":
 			return
-		if not str(self._config.get("key") or "").strip():
+		if _validateKey(str(self._config.get("key") or "").strip()) is not None:
 			return
 		self._manualStop = False
 		self._autoRole = mode
