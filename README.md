@@ -14,7 +14,7 @@ The add-on is just a launcher and a settings UI. The helper does the audio work 
 
 1. On **both** machines, download `remoteAudioClient-<version>.nvda-addon` from [Releases](https://github.com/serrebidev/NVDARemoteAudioClient/releases) and open it. NVDA installs it.
 2. Restart NVDA.
-3. On the machine that will **send** audio: open `NVDA menu > Tools > NVDA Remote Audio > Install audio server (this machine sends audio)...`. The add-on downloads [NVDARemoteAudioServer](https://github.com/haitun001/NVDARemoteAudioServer) from GitHub, installs it under `C:\NVDARemoteAudioServer\` (or `%LOCALAPPDATA%\NVDARemoteAudioServer\` if the first isn't writable), starts it, registers a per-user logon task so it auto-starts at sign-in, and prompts for UAC to add Windows Firewall inbound allow rules for TCP+UDP 6838. Decline UAC and the rest still installs; pick `Add firewall rules for audio server...` later if you want to retry.
+3. On the machine that will **send** audio: open `NVDA menu > Tools > NVDA Remote Audio > Install audio server (this machine sends audio)...`. The add-on downloads [NVDARemoteAudioServer](https://github.com/haitun001/NVDARemoteAudioServer) from GitHub, installs it under `C:\NVDARemoteAudioServer\` (or `%LOCALAPPDATA%\NVDARemoteAudioServer\` if the first isn't writable), starts it, registers a per-user Startup shortcut so it auto-starts at sign-in, and prompts for UAC to add Windows Firewall inbound allow rules for TCP+UDP 6838. Decline UAC and the rest still installs; pick `Add firewall rules for audio server...` later if you want to retry.
 4. On **both** machines, open `NVDA menu > Preferences > Settings > NVDA Remote Audio` and set:
    - **Server host** — IP/hostname of the machine running the server.
    - **Audio port** — 6838 (default).
@@ -47,7 +47,7 @@ Override with `Settings > NVDA Remote Audio > Latency profile`.
 
 ## "Automatic" startup
 
-If `C:\NVDARemoteAudioServer\NVDARemoteAudioServer.exe` exists on the machine, the add-on starts as **publisher** (sends). Otherwise it starts as **subscriber** (receives). Override under `Startup action` in settings.
+If `C:\NVDARemoteAudioServer\NVDARemoteAudioServer.exe` or `%LOCALAPPDATA%\NVDARemoteAudioServer\NVDARemoteAudioServer.exe` exists on the machine, the add-on starts as **publisher** (sends). Otherwise it starts as **subscriber** (receives). Override under `Startup action` in settings.
 
 ## Build from source
 

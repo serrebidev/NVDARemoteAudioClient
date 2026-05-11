@@ -480,6 +480,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		if RemoteAudioSettingsPanel not in gui.settingsDialogs.NVDASettingsDialog.categoryClasses:
 			gui.settingsDialogs.NVDASettingsDialog.categoryClasses.append(RemoteAudioSettingsPanel)
 		self._createMenu()
+		if server_installer.is_installed():
+			server_installer.ensure_installed_server_ready()
 		core.callLater(1500, self._autoStartFromSettings)
 
 	def terminate(self):

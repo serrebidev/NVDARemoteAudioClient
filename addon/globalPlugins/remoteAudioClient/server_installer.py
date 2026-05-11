@@ -29,6 +29,8 @@ GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/haitun001/NVDARemoteAu
 WINDOWS_ASSET_NAME = "NVDARemoteAudioServer-windows-amd64.zip"
 SERVER_EXE_NAME = "NVDARemoteAudioServer.exe"
 SCHEDULED_TASK_NAME = "NVDARemoteAudioServer"
+STARTUP_SHORTCUT_NAME = "NVDARemoteAudioServer.lnk"
+STARTUP_SHORTCUT_DESCRIPTION = "Starts NVDARemoteAudioServer for NVDA Remote Audio Client"
 
 # Searched in order. The first existing match wins.
 INSTALL_DIR_CANDIDATES = (
@@ -87,10 +89,10 @@ def is_installed():
 def offer_install(parent, on_done=None):
 	"""Show a yes/no dialog asking the user to install. If yes, runs the install on a
 	background thread and calls on_done(success: bool) on the GUI thread when finished.
-	If the server is already installed, on_done(True) is called immediately."""
-	if is_installed():
-		if on_done is not None:
-			wx.CallAfter(on_done, True)
+	If the server is already installed, repairs startup persistence and starts it."""
+	exe = find_server_exe()
+	if exe is not None:
+		ensure_installed_server_ready(on_done=on_done, announce=True)
 		return
 
 	message = _(
@@ -141,17 +143,30 @@ def _install_worker(on_done):
 				"Download finished but {0} was not found in {1}".format(SERVER_EXE_NAME, install_dir)
 			)
 
-		_register_logon_task(exe)
-		_start_server_detached(exe)
+		_start_server_if_needed(exe)
+		startup_ok = _ensure_startup_entry(exe)
 
 		firewall_ok = _ensure_firewall_rules(exe)
-		if firewall_ok:
-			wx.CallAfter(ui.message, _("Audio server installed and started. Firewall rules added."))
+		if startup_ok and firewall_ok:
+			wx.CallAfter(ui.message, _("Audio server installed, configured to start at sign-in, and started. Firewall rules added."))
+		elif startup_ok:
+			wx.CallAfter(
+				ui.message,
+				_(
+					"Audio server installed, configured to start at sign-in, and started, but the firewall rules could not be added. "
+					"Allow inbound TCP and UDP port {port} manually if remote machines cannot connect."
+				).format(port=SERVER_PORT),
+			)
+		elif firewall_ok:
+			wx.CallAfter(
+				ui.message,
+				_("Audio server installed and started, but automatic startup could not be configured. Firewall rules added."),
+			)
 		else:
 			wx.CallAfter(
 				ui.message,
 				_(
-					"Audio server installed and started, but the firewall rules could not be added. "
+					"Audio server installed and started, but automatic startup and firewall rules could not be configured. "
 					"Allow inbound TCP and UDP port {port} manually if remote machines cannot connect."
 				).format(port=SERVER_PORT),
 			)
@@ -165,6 +180,43 @@ def _install_worker(on_done):
 		)
 		if on_done is not None:
 			wx.CallAfter(on_done, False)
+
+
+def ensure_installed_server_ready(on_done=None, announce=False):
+	"""Repair startup persistence and start the server for an existing install."""
+	exe = find_server_exe()
+	if exe is None:
+		if on_done is not None:
+			wx.CallAfter(on_done, False)
+		return
+
+	thread = threading.Thread(
+		target=_ensure_installed_server_ready_worker,
+		args=(exe, on_done, announce),
+		name="ensureNVDARemoteAudioServerReady",
+		daemon=True,
+	)
+	thread.start()
+
+
+def _ensure_installed_server_ready_worker(exe, on_done, announce):
+	server_ok = False
+	try:
+		_start_server_if_needed(exe)
+		startup_ok = _ensure_startup_entry(exe)
+		server_ok = True
+		if announce:
+			if startup_ok:
+				wx.CallAfter(ui.message, _("Audio server is installed, configured to start at sign-in, and running."))
+			else:
+				wx.CallAfter(ui.message, _("Audio server is installed and running, but automatic startup could not be configured."))
+	except Exception as e:
+		log.error("Failed to repair or start NVDARemoteAudioServer", exc_info=True)
+		if announce:
+			wx.CallAfter(ui.message, _("Failed to start or repair audio server: {error}").format(error=e))
+	finally:
+		if on_done is not None:
+			wx.CallAfter(on_done, server_ok)
 
 
 def _resolve_windows_zip_url():
@@ -236,8 +288,108 @@ def _pick_install_dir():
 	return fallback
 
 
+def _ensure_startup_entry(exe):
+	"""Create a per-user startup entry. Returns False if all persistence paths fail."""
+	if _register_startup_shortcut(exe):
+		_delete_legacy_logon_task()
+		return True
+	return _register_logon_task(exe)
+
+
+def _startup_shortcut_path():
+	appdata = os.environ.get("APPDATA")
+	if not appdata:
+		return None
+	startup_dir = os.path.join(
+		appdata,
+		"Microsoft",
+		"Windows",
+		"Start Menu",
+		"Programs",
+		"Startup",
+	)
+	return os.path.join(startup_dir, STARTUP_SHORTCUT_NAME)
+
+
+def _register_startup_shortcut(exe):
+	"""Register startup through the user's Startup folder. This needs no admin rights."""
+	shortcut_path = _startup_shortcut_path()
+	if not shortcut_path:
+		log.warning("Could not register startup shortcut: APPDATA is not set")
+		return False
+	try:
+		os.makedirs(os.path.dirname(shortcut_path), exist_ok=True)
+	except OSError as e:
+		log.warning("Could not create Startup folder for NVDARemoteAudioServer shortcut: %s", e)
+		return False
+
+	def ps_quote(value):
+		return str(value).replace("'", "''")
+
+	ps_command = (
+		"$ErrorActionPreference='Stop';"
+		"$shell=New-Object -ComObject WScript.Shell;"
+		f"$shortcut=$shell.CreateShortcut('{ps_quote(shortcut_path)}');"
+		f"$shortcut.TargetPath='{ps_quote(exe)}';"
+		f"$shortcut.WorkingDirectory='{ps_quote(os.path.dirname(exe))}';"
+		"$shortcut.WindowStyle=7;"
+		f"$shortcut.Description='{ps_quote(STARTUP_SHORTCUT_DESCRIPTION)}';"
+		"$shortcut.Save();"
+	)
+	try:
+		result = subprocess.run(
+			[
+				"powershell.exe",
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				ps_command,
+			],
+			capture_output=True,
+			text=True,
+			timeout=30,
+			creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+		)
+	except (subprocess.SubprocessError, FileNotFoundError) as e:
+		log.warning("Could not register NVDARemoteAudioServer startup shortcut: %s", e)
+		return False
+	if result.returncode != 0:
+		log.warning(
+			"Startup shortcut registration failed with code %s; stdout=%r stderr=%r",
+			result.returncode,
+			result.stdout,
+			result.stderr,
+		)
+		return False
+	if not os.path.isfile(shortcut_path):
+		log.warning("Startup shortcut registration did not create %s", shortcut_path)
+		return False
+	return True
+
+
+def _delete_legacy_logon_task():
+	"""Remove the older scheduled task path so the server is not launched twice."""
+	try:
+		subprocess.run(
+			[
+				"schtasks",
+				"/delete",
+				"/tn",
+				SCHEDULED_TASK_NAME,
+				"/f",
+			],
+			capture_output=True,
+			text=True,
+			timeout=15,
+			creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+		)
+	except (subprocess.SubprocessError, FileNotFoundError) as e:
+		log.debug("Could not remove legacy NVDARemoteAudioServer logon task: %s", e)
+
+
 def _register_logon_task(exe):
-	"""Register a per-user logon scheduled task. Best effort; does not raise on failure."""
+	"""Fallback: register a per-user logon scheduled task. Best effort."""
 	# /rl LIMITED keeps it user-context (no admin elevation needed).
 	# /f overwrites any existing task with the same name.
 	args = [
@@ -254,15 +406,57 @@ def _register_logon_task(exe):
 		"/f",
 	]
 	try:
-		subprocess.run(
+		result = subprocess.run(
 			args,
 			check=True,
 			capture_output=True,
 			text=True,
+			timeout=30,
 			creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
 		)
 	except (subprocess.CalledProcessError, FileNotFoundError) as e:
 		log.warning("Could not register NVDARemoteAudioServer logon task: %s", e)
+		return False
+	except subprocess.SubprocessError as e:
+		log.warning("NVDARemoteAudioServer logon task registration timed out or failed: %s", e)
+		return False
+	if result.returncode != 0:
+		log.warning(
+			"Logon task registration failed with code %s; stdout=%r stderr=%r",
+			result.returncode,
+			result.stdout,
+			result.stderr,
+		)
+		return False
+	return True
+
+
+def _start_server_if_needed(exe):
+	if _is_server_process_running():
+		return
+	_start_server_detached(exe)
+
+
+def _is_server_process_running():
+	try:
+		result = subprocess.run(
+			[
+				"tasklist",
+				"/FI",
+				"IMAGENAME eq {0}".format(SERVER_EXE_NAME),
+				"/FO",
+				"CSV",
+				"/NH",
+			],
+			capture_output=True,
+			text=True,
+			timeout=15,
+			creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+		)
+	except (subprocess.SubprocessError, FileNotFoundError) as e:
+		log.debug("Could not check whether NVDARemoteAudioServer is already running: %s", e)
+		return False
+	return result.returncode == 0 and SERVER_EXE_NAME.lower() in (result.stdout or "").lower()
 
 
 def _start_server_detached(exe):
