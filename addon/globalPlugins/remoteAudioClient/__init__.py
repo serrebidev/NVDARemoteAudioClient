@@ -57,11 +57,10 @@ def _validateKey(key):
 STARTUP_MODES = ("auto", "disabled", "subscriber", "publisher")
 LATENCY_PROFILES = ("auto", "lan", "tailscale", "internet")
 LATENCY_SETTINGS = {
-	# LAN jitter is normally sub-millisecond. 30 ms of prebuffer = 2 wire packets
-	# (15 ms each), enough to absorb a single late packet without underrun.
-	"lan": {"prebufferMs": 30, "outputLatencyMs": 40, "bufferMs": 200},
-	"tailscale": {"prebufferMs": 90, "outputLatencyMs": 80, "bufferMs": 450},
-	"internet": {"prebufferMs": 150, "outputLatencyMs": 120, "bufferMs": 800},
+	# LAN uses 5 ms Opus frames and a small WASAPI event-sync playout target.
+	"lan": {"prebufferMs": 15, "outputLatencyMs": 15, "bufferMs": 120, "opusFrameMs": 5},
+	"tailscale": {"prebufferMs": 50, "outputLatencyMs": 20, "bufferMs": 250, "opusFrameMs": 10},
+	"internet": {"prebufferMs": 100, "outputLatencyMs": 30, "bufferMs": 600, "opusFrameMs": 10},
 }
 
 
@@ -258,13 +257,16 @@ class AudioClientProcess:
 			"--port", str(config["port"]),
 			"--key", config["key"],
 		]
+		latency = _latencySettings(config)
+		args.extend([
+			"--opus-frame-ms", str(latency["opusFrameMs"]),
+		])
 		if role == "publisher":
 			args.extend([
 				"--exclude-pid", str(os.getpid()),
 				"--bitrate", str(config["bitrate"]),
 			])
 		else:
-			latency = _latencySettings(config)
 			args.extend([
 				"--prebuffer-ms", str(latency["prebufferMs"]),
 				"--output-latency-ms", str(latency["outputLatencyMs"]),

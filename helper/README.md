@@ -4,8 +4,8 @@ Standalone Windows console EXE that does the audio work for the [NVDA Remote Aud
 
 ## What it does
 
-- **Publisher**: WASAPI process-loopback capture on the default render endpoint, excluding the NVDA process tree, → Opus encode (48 kHz stereo, 15 ms packets) → UDP to the server.
-- **Subscriber**: UDP from the server → Opus decode with packet-loss concealment → buffered playback through `WaveOutEvent`.
+- **Publisher**: WASAPI process-loopback capture on the default render endpoint, excluding the NVDA process tree, → Opus encode (48 kHz stereo, 5/10/20 ms packets with optional FEC) → UDP to the server.
+- **Subscriber**: UDP from the server → Opus decode with FEC recovery / packet-loss concealment → drift-corrected ring buffer → WASAPI event-sync playback.
 - **Control plane**: TCP JSON handshake on the same port, periodic heartbeats, UDP session registration.
 
 The helper logs structured JSON events to stdout, one per line. The add-on parses them to drive NVDA messages.
@@ -39,20 +39,22 @@ The helper does not need NVDA. You can drive it from a shell to test the protoco
 
 ```powershell
 # Receive
-NVDARemoteAudioHelper.exe --role subscriber --host 127.0.0.1 --port 6838 --key MYKEY
+NVDARemoteAudioHelper.exe --role subscriber --host 127.0.0.1 --port 6838 --key MYKEY --opus-frame-ms 5 --prebuffer-ms 15 --output-latency-ms 15 --buffer-ms 120
 
 # Send a generated tone (no capture, no NVDA exclusion)
-NVDARemoteAudioHelper.exe --role publisher --host 127.0.0.1 --port 6838 --key MYKEY --test-tone
+NVDARemoteAudioHelper.exe --role publisher --host 127.0.0.1 --port 6838 --key MYKEY --test-tone --opus-frame-ms 5
 
 # Send real system audio, excluding NVDA's process tree
-NVDARemoteAudioHelper.exe --role publisher --host 127.0.0.1 --port 6838 --key MYKEY --exclude-pid <NVDA_PID> --bitrate 128000
+NVDARemoteAudioHelper.exe --role publisher --host 127.0.0.1 --port 6838 --key MYKEY --exclude-pid <NVDA_PID> --bitrate 128000 --opus-frame-ms 5
 ```
 
-Subscriber-side jitter buffering is tunable from CLI (the add-on passes these based on the latency profile):
+Packet size and subscriber-side jitter buffering are tunable from CLI (the add-on passes these based on the latency profile):
 
 ```
+--opus-frame-ms <ms>      Opus packet duration: 5, 10, or 20. Default 10.
+--disable-fec             Disable Opus in-band forward error correction.
 --prebuffer-ms <ms>       Startup buffer before playback begins. Default 90.
---output-latency-ms <ms>  WaveOutEvent latency. Default 80.
+--output-latency-ms <ms>  WASAPI event-sync output latency. Default 80.
 --buffer-ms <ms>          Max playback buffer cap. Default 450.
 ```
 
@@ -63,10 +65,12 @@ Subscriber-side jitter buffering is tunable from CLI (the add-on passes these ba
 | `Program.cs` | Entry point, arg parsing, session lifecycle. |
 | `HelperOptions.cs` | CLI parsing. |
 | `RemoteAudioProtocol.cs` | TCP handshake + heartbeats, UDP packet framing (`RAS1` magic, 22-byte header, 16-byte session id, sequence/timestamp), session registration. |
-| `AudioPublisher.cs` | Opus encode loop, repacketizer (3×5 ms → 15 ms), test-tone generator. |
+| `AudioPublisher.cs` | Opus encode loop, configurable 5/10/20 ms packets, test-tone generator. |
 | `ProcessLoopbackCapture.cs` | `ActivateAudioInterfaceAsync` against `VAD\Process_Loopback`, `IAudioClient`/`IAudioCaptureClient` interop, exclude-PID wiring. |
-| `AudioSubscriber.cs` | Opus decode + PLC, hands PCM to playback. |
-| `PlaybackSink.cs` | `BufferedWaveProvider` + `WaveOutEvent`, prebuffer-then-continuous strategy. |
+| `AudioSubscriber.cs` | Opus decode, in-band FEC recovery, PLC, diagnostic counters. |
+| `PlaybackSink.cs` | WASAPI event-sync output, float ring buffer, prebuffer, underrun fade, trim, drift correction. |
+| `AudioRingBuffer.cs` | Lock-free single-producer/single-consumer audio ring buffer. |
+| `WindowsAudioThreadBoost.cs` | MMCSS / thread-priority helper for synchronous audio paths. |
 | `JsonLog.cs` | One-line-JSON status events written to stdout. |
 | `HResult.cs` | Throws `COMException` on non-zero HRESULTs. |
 

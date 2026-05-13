@@ -24,9 +24,9 @@
 
 <h2>Latency profiles</h2>
 <ul>
-  <li><strong>LAN</strong> — lowest buffer (30/40/200 ms).</li>
-  <li><strong>Tailscale</strong> — small extra buffer (90/80/450 ms).</li>
-  <li><strong>Internet</strong> — most stable low-latency buffer (150/120/800 ms).</li>
+  <li><strong>LAN</strong> — 5 ms Opus packets and the lowest buffer (15/15/120 ms).</li>
+  <li><strong>Tailscale</strong> — 10 ms Opus packets with a small extra buffer (50/20/250 ms).</li>
+  <li><strong>Internet</strong> — 10 ms Opus packets with the most stable low-latency buffer (100/30/600 ms).</li>
   <li><strong>Automatic</strong> — picked from the host you set: LAN for private/loopback IPs, Tailscale for 100.64.0.0/10 or *.ts.net, Internet for anything else.</li>
 </ul>
 

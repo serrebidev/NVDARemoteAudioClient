@@ -35,13 +35,13 @@ In publisher mode the helper opens a [WASAPI process loopback](https://learn.mic
 
 ## Latency
 
-Wire format: 48 kHz stereo Opus, 15 ms packets (3 × 5 ms frames repacketized), with packet-loss concealment on the receiver. Receiver picks a jitter-buffer profile from the host you set:
+Wire format: 48 kHz stereo Opus over UDP. LAN uses 5 ms Opus packets; Tailscale and Internet profiles use 10 ms packets. Opus in-band FEC is enabled, and the receiver combines FEC, packet-loss concealment, a low-latency WASAPI event-sync output path, and drift-corrected playout buffering.
 
 | Profile | Picked when host is | Prebuffer | Output latency | Buffer cap |
 |---|---|---|---|---|
-| LAN | private/loopback IP | 30 ms | 40 ms | 200 ms |
-| Tailscale | 100.64.0.0/10 or `*.ts.net` | 90 ms | 80 ms | 450 ms |
-| Internet | anything else | 150 ms | 120 ms | 800 ms |
+| LAN | private/loopback IP | 15 ms | 15 ms | 120 ms |
+| Tailscale | 100.64.0.0/10 or `*.ts.net` | 50 ms | 20 ms | 250 ms |
+| Internet | anything else | 100 ms | 30 ms | 600 ms |
 
 Override with `Settings > NVDA Remote Audio > Latency profile`.
 

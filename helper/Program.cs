@@ -41,11 +41,11 @@ internal static class Program
 			{
 				if (options.TestTone)
 				{
-					await AudioPublisher.RunTestToneAsync(session, options.Bitrate, cts.Token);
+					await AudioPublisher.RunTestToneAsync(session, options.Bitrate, options.OpusFrameMs, options.OpusFec, cts.Token);
 				}
 				else
 				{
-					await AudioPublisher.RunCaptureAsync(session, options.ExcludePid, options.Bitrate, cts.Token);
+					await AudioPublisher.RunCaptureAsync(session, options.ExcludePid, options.Bitrate, options.OpusFrameMs, options.OpusFec, cts.Token);
 				}
 			}
 			else
@@ -55,6 +55,7 @@ internal static class Program
 					options.PrebufferMs,
 					options.OutputLatencyMs,
 					options.PlaybackBufferMs,
+					options.OpusFrameMs,
 					cts.Token);
 			}
 

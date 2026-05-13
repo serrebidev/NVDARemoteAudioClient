@@ -11,16 +11,15 @@ internal sealed class ProcessLoopbackCapture
 	private const int SampleRate = 48000;
 	private const int Channels = 2;
 	private const int BitsPerSample = 16;
-	private const int FrameSamplesPerChannel = 720;
-	private const int FrameShorts = FrameSamplesPerChannel * Channels;
 	private const string VirtualAudioDeviceProcessLoopback = @"VAD\Process_Loopback";
 	private readonly int _excludePid;
-	private readonly short[] _frameBuffer = new short[FrameShorts];
+	private readonly short[] _frameBuffer;
 	private int _frameOffset;
 
-	public ProcessLoopbackCapture(int excludePid)
+	public ProcessLoopbackCapture(int excludePid, int frameSamplesPerChannel)
 	{
 		_excludePid = excludePid;
+		_frameBuffer = new short[Math.Clamp(frameSamplesPerChannel, 120, 960) * Channels];
 	}
 
 	public async Task RunAsync(ChannelWriter<short[]> writer, CancellationToken cancellationToken)
@@ -34,9 +33,14 @@ internal sealed class ProcessLoopbackCapture
 			audioClient = await ActivateAudioClientAsync(_excludePid, cancellationToken);
 			InitializeAudioClient(audioClient, sampleReady.SafeWaitHandle);
 			captureClient = GetCaptureClient(audioClient);
+			using var threadBoost = new WindowsAudioThreadBoost("Capture");
 
 			HResult.ThrowIfFailed(audioClient.Start(), "IAudioClient.Start");
-			JsonLog.Write("status", "Capture started.");
+			JsonLog.Write("status", "Capture started.", new Dictionary<string, object?>
+			{
+				["frame_ms"] = _frameBuffer.Length / Channels * 1000 / SampleRate,
+				["thread_boost"] = threadBoost.Mode,
+			});
 
 			var waitHandles = new WaitHandle[] { sampleReady, cancellationToken.WaitHandle };
 			while (!cancellationToken.IsCancellationRequested)

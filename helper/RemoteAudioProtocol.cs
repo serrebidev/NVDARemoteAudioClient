@@ -107,6 +107,8 @@ internal sealed class RemoteAudioSession : IAsyncDisposable
 		var udpTimeoutMs = response.UdpSessionTimeoutMs > 0 ? response.UdpSessionTimeoutMs : 15000;
 
 		var udp = new UdpClient();
+		udp.Client.SendBufferSize = 256 * 1024;
+		udp.Client.ReceiveBufferSize = 512 * 1024;
 		udp.Connect(host, udpPort);
 
 		var session = new RemoteAudioSession(tcp, writer, udp, sessionId, maxPayload, tcpHeartbeatMs, udpTimeoutMs, role, cancellationToken);

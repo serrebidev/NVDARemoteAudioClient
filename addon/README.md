@@ -38,10 +38,10 @@ The plugin builds a command line with `subprocess.Popen` and reads its stdout (t
 
 ```
 NVDARemoteAudioHelper.exe --role subscriber --host <host> --port <port> --key <key> \
-  --prebuffer-ms <n> --output-latency-ms <n> --buffer-ms <n>
+  --opus-frame-ms <n> --prebuffer-ms <n> --output-latency-ms <n> --buffer-ms <n>
 
 NVDARemoteAudioHelper.exe --role publisher --host <host> --port <port> --key <key> \
-  --exclude-pid <NVDA pid> --bitrate <bps>
+  --opus-frame-ms <n> --exclude-pid <NVDA pid> --bitrate <bps>
 ```
 
 `--exclude-pid` is set to NVDA's own PID (`os.getpid()` from inside the plugin), which is what makes WASAPI drop NVDA's audio from the captured stream.

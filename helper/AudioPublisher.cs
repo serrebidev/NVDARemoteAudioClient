@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Threading.Channels;
+using Concentus;
 using Concentus.Enums;
-using Concentus.Structs;
 
 namespace NVDARemoteAudioHelper;
 
@@ -9,47 +9,60 @@ internal static class AudioPublisher
 {
 	private const int SampleRate = 48000;
 	private const int Channels = 2;
-	private const int OpusFrameSamplesPerChannel = 240;
-	private const int OpusFramesPerPacket = 3;
-	private const int PacketSamplesPerChannel = OpusFrameSamplesPerChannel * OpusFramesPerPacket;
-	private const int PacketShorts = PacketSamplesPerChannel * Channels;
-	private const int PacketMilliseconds = 15;
 
-	public static async Task RunCaptureAsync(RemoteAudioSession session, int excludePid, int bitrate, CancellationToken cancellationToken)
+	public static async Task RunCaptureAsync(
+		RemoteAudioSession session,
+		int excludePid,
+		int bitrate,
+		int opusFrameMilliseconds,
+		bool useInbandFec,
+		CancellationToken cancellationToken)
 	{
+		var packetSamplesPerChannel = FrameSamplesPerChannel(opusFrameMilliseconds);
+		var channelCapacity = Math.Max(2, 40 / opusFrameMilliseconds);
 		JsonLog.Write("status", "Starting system capture with NVDA audio excluded.", new Dictionary<string, object?>
 		{
 			["excluded_pid"] = excludePid,
 			["bitrate"] = bitrate,
+			["opus_frame_ms"] = opusFrameMilliseconds,
+			["opus_fec"] = useInbandFec,
+			["queue_capacity"] = channelCapacity,
 		});
 
-		var channel = Channel.CreateBounded<short[]>(new BoundedChannelOptions(16)
+		var channel = Channel.CreateBounded<short[]>(new BoundedChannelOptions(channelCapacity)
 		{
 			SingleReader = true,
 			SingleWriter = true,
 			FullMode = BoundedChannelFullMode.DropOldest,
 		});
 
-		var capture = new ProcessLoopbackCapture(excludePid);
+		var capture = new ProcessLoopbackCapture(excludePid, packetSamplesPerChannel);
 		var captureTask = capture.RunAsync(channel.Writer, cancellationToken);
-		var encodeTask = EncodeAndSendLoopAsync(channel.Reader, session, bitrate, cancellationToken);
+		var encodeTask = EncodeAndSendLoopAsync(channel.Reader, session, bitrate, opusFrameMilliseconds, useInbandFec, cancellationToken);
 
 		var completed = await Task.WhenAny(captureTask, encodeTask);
 		await completed;
 	}
 
-	public static async Task RunTestToneAsync(RemoteAudioSession session, int bitrate, CancellationToken cancellationToken)
+	public static async Task RunTestToneAsync(
+		RemoteAudioSession session,
+		int bitrate,
+		int opusFrameMilliseconds,
+		bool useInbandFec,
+		CancellationToken cancellationToken)
 	{
+		var packetSamplesPerChannel = FrameSamplesPerChannel(opusFrameMilliseconds);
+		var packetShorts = packetSamplesPerChannel * Channels;
 		JsonLog.Write("status", "Sending generated test tone.", new Dictionary<string, object?>
 		{
 			["bitrate"] = bitrate,
+			["opus_frame_ms"] = opusFrameMilliseconds,
+			["opus_fec"] = useInbandFec,
 		});
 
-		var encoder = CreateEncoder(bitrate);
-		var packetizer = new OpusRepacketizer();
+		var encoder = CreateEncoder(bitrate, useInbandFec);
 		var opusBuffer = new byte[session.MaxPayloadBytes];
-		var encodedFrames = CreateEncodedFrameBuffers(session.MaxPayloadBytes);
-		var frame = new short[PacketShorts];
+		var frame = new short[packetShorts];
 		var sequence = 0UL;
 		var phase = 0.0;
 		var phaseStep = 2.0 * Math.PI * 440.0 / SampleRate;
@@ -58,7 +71,7 @@ internal static class AudioPublisher
 
 		while (!cancellationToken.IsCancellationRequested)
 		{
-			for (var i = 0; i < PacketSamplesPerChannel; i++)
+			for (var i = 0; i < packetSamplesPerChannel; i++)
 			{
 				var value = (short)(Math.Sin(phase) * short.MaxValue * 0.12);
 				frame[i * 2] = value;
@@ -70,10 +83,10 @@ internal static class AudioPublisher
 				}
 			}
 
-			var encodedLength = EncodePacket(encoder, packetizer, frame, encodedFrames, opusBuffer);
+			var encodedLength = EncodePacket(encoder, frame, packetSamplesPerChannel, opusBuffer);
 			await session.SendAudioAsync(sequence++, (ulong)start.ElapsedMilliseconds, opusBuffer.AsMemory(0, encodedLength), cancellationToken);
 
-			nextFrameAt += TimeSpan.FromMilliseconds(PacketMilliseconds);
+			nextFrameAt += TimeSpan.FromMilliseconds(opusFrameMilliseconds);
 			var delay = nextFrameAt - start.Elapsed;
 			if (delay > TimeSpan.Zero)
 			{
@@ -86,69 +99,74 @@ internal static class AudioPublisher
 		ChannelReader<short[]> frames,
 		RemoteAudioSession session,
 		int bitrate,
+		int opusFrameMilliseconds,
+		bool useInbandFec,
 		CancellationToken cancellationToken)
 	{
-		var encoder = CreateEncoder(bitrate);
-		var packetizer = new OpusRepacketizer();
+		var encoder = CreateEncoder(bitrate, useInbandFec);
+		var packetSamplesPerChannel = FrameSamplesPerChannel(opusFrameMilliseconds);
 		var opusBuffer = new byte[session.MaxPayloadBytes];
-		var encodedFrames = CreateEncodedFrameBuffers(session.MaxPayloadBytes);
 		var sequence = 0UL;
 		var start = Stopwatch.StartNew();
+		var nextDiagnosticAt = TimeSpan.FromSeconds(5);
+		var packetsSent = 0UL;
 
 		await foreach (var frame in frames.ReadAllAsync(cancellationToken))
 		{
-			var encodedLength = EncodePacket(encoder, packetizer, frame, encodedFrames, opusBuffer);
+			var encodedLength = EncodePacket(encoder, frame, packetSamplesPerChannel, opusBuffer);
 			await session.SendAudioAsync(sequence++, (ulong)start.ElapsedMilliseconds, opusBuffer.AsMemory(0, encodedLength), cancellationToken);
+			packetsSent++;
+
+			if (start.Elapsed >= nextDiagnosticAt)
+			{
+				JsonLog.Write("diagnostic", "Publisher audio statistics.", new Dictionary<string, object?>
+				{
+					["packets_sent"] = packetsSent,
+					["opus_frame_ms"] = opusFrameMilliseconds,
+				});
+				nextDiagnosticAt += TimeSpan.FromSeconds(5);
+			}
 		}
 	}
 
-	private static OpusEncoder CreateEncoder(int bitrate)
+	private static IOpusEncoder CreateEncoder(int bitrate, bool useInbandFec)
 	{
-		return new OpusEncoder(SampleRate, Channels, OpusApplication.OPUS_APPLICATION_AUDIO)
-		{
-			Bitrate = bitrate,
-			Complexity = 5,
-			UseVBR = true,
-			UseConstrainedVBR = true,
-		};
-	}
-
-	private static byte[][] CreateEncodedFrameBuffers(int maxPayloadBytes)
-	{
-		var buffers = new byte[OpusFramesPerPacket][];
-		for (var i = 0; i < buffers.Length; i++)
-		{
-			buffers[i] = new byte[maxPayloadBytes];
-		}
-
-		return buffers;
+		var encoder = OpusCodecFactory.CreateEncoder(SampleRate, Channels, OpusApplication.OPUS_APPLICATION_AUDIO, TextWriter.Null);
+		encoder.Bitrate = bitrate;
+		encoder.Complexity = 5;
+		encoder.UseVBR = true;
+		encoder.UseConstrainedVBR = true;
+		encoder.UseInbandFEC = useInbandFec;
+		encoder.PacketLossPercent = useInbandFec ? 10 : 0;
+		return encoder;
 	}
 
 	private static int EncodePacket(
-		OpusEncoder encoder,
-		OpusRepacketizer packetizer,
+		IOpusEncoder encoder,
 		short[] pcm,
-		byte[][] encodedFrames,
+		int frameSamplesPerChannel,
 		byte[] packetBuffer)
 	{
-		packetizer.Reset();
-		for (var i = 0; i < OpusFramesPerPacket; i++)
+		if (pcm.Length != frameSamplesPerChannel * Channels)
 		{
-			var frame = pcm.AsSpan(i * OpusFrameSamplesPerChannel * Channels, OpusFrameSamplesPerChannel * Channels);
-			var encodedLength = encoder.Encode(frame, OpusFrameSamplesPerChannel, encodedFrames[i].AsSpan(), encodedFrames[i].Length);
-			var result = packetizer.AddPacket(encodedFrames[i].AsSpan(), 0, encodedLength);
-			if (result < 0)
-			{
-				throw new InvalidOperationException($"Opus repacketizer rejected a 5 ms frame with code {result}.");
-			}
+			throw new InvalidOperationException($"PCM frame length {pcm.Length} does not match Opus frame size {frameSamplesPerChannel * Channels}.");
 		}
 
-		var packetLength = packetizer.CreatePacket(packetBuffer, 0, packetBuffer.Length);
-		if (packetLength < 0)
+		var encodedLength = encoder.Encode(pcm.AsSpan(), frameSamplesPerChannel, packetBuffer.AsSpan(), packetBuffer.Length);
+		if (encodedLength <= 0)
 		{
-			throw new InvalidOperationException($"Opus repacketizer failed with code {packetLength}.");
+			throw new InvalidOperationException($"Opus encode failed with code {encodedLength}.");
 		}
 
-		return packetLength;
+		return encodedLength;
+	}
+
+	private static int FrameSamplesPerChannel(int opusFrameMilliseconds)
+	{
+		return opusFrameMilliseconds switch
+		{
+			5 or 10 or 20 => SampleRate * opusFrameMilliseconds / 1000,
+			_ => throw new ArgumentOutOfRangeException(nameof(opusFrameMilliseconds), "Opus frame size must be 5, 10, or 20 ms."),
+		};
 	}
 }
