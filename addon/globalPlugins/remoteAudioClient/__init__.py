@@ -570,19 +570,14 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	def terminate(self):
 		log.info("remoteAudioClient terminate starting")
 		self._terminating = True
-		if self._autoStartCall is not None:
-			self._autoStartCall.Stop()
-			self._autoStartCall = None
-		if self._autoRetryCall is not None:
-			self._autoRetryCall.Stop()
-			self._autoRetryCall = None
-		if self._remoteScriptSyncCall is not None:
-			self._remoteScriptSyncCall.Stop()
-			self._remoteScriptSyncCall = None
-		self._removeRemoteLocalScripts()
-		self._destroyMenu()
-		self._client.disableExitCallback()
-		self._client.stop(wait=False)
+		# NVDA may call terminate while the wx event loop, NVDA Remote, and the
+		# system tray menu are already being torn down. Keep shutdown cleanup
+		# fire-and-forget; stale menu/script references vanish with the process.
+		try:
+			self._client.disableExitCallback()
+			self._client.stop(wait=False)
+		except Exception:
+			log.debug("remoteAudioClient helper stop during terminate failed", exc_info=True)
 		try:
 			gui.settingsDialogs.NVDASettingsDialog.categoryClasses.remove(RemoteAudioSettingsPanel)
 		except Exception:
@@ -818,7 +813,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 	def _retryAutoStart(self, role):
 		self._autoRetryCall = None
-		if self._manualStop or self._client.isRunning():
+		if self._terminating or self._manualStop or self._client.isRunning():
 			return
 		self._config = _loadConfig()
 		if _resolveStartupMode(self._config) != role:
