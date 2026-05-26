@@ -1,6 +1,7 @@
 import json
 import os
 import ipaddress
+import importlib
 import subprocess
 import threading
 import time
@@ -15,6 +16,7 @@ import ui
 import wx
 from gui import guiHelper
 from logHandler import log
+from scriptHandler import script
 
 from . import server_installer
 
@@ -32,6 +34,9 @@ DEFAULT_CONFIG = {
 	"bitrate": 128000,
 	"startupMode": "auto",
 	"latencyProfile": "auto",
+	"announceStatus": True,
+	"useFec": True,
+	"verboseLogging": False,
 }
 
 # Mirrors NVDARemoteAudioServer's server-side rules so we surface a friendly
@@ -95,6 +100,19 @@ def _normalizeConfig(config):
 			return default
 		return max(minimum, min(maximum, value))
 
+	def asBool(value, default):
+		if isinstance(value, bool):
+			return value
+		if value is None:
+			return default
+		if isinstance(value, str):
+			value = value.strip().lower()
+			if value in ("1", "true", "yes", "on"):
+				return True
+			if value in ("0", "false", "no", "off"):
+				return False
+		return bool(value)
+
 	return {
 		"host": str(config.get("host") or DEFAULT_CONFIG["host"]).strip() or DEFAULT_CONFIG["host"],
 		"port": clampInt(config.get("port"), DEFAULT_CONFIG["port"], 1, 65535),
@@ -102,6 +120,9 @@ def _normalizeConfig(config):
 		"bitrate": clampInt(config.get("bitrate"), DEFAULT_CONFIG["bitrate"], 16000, 510000),
 		"startupMode": config.get("startupMode") if config.get("startupMode") in STARTUP_MODES else DEFAULT_CONFIG["startupMode"],
 		"latencyProfile": config.get("latencyProfile") if config.get("latencyProfile") in LATENCY_PROFILES else DEFAULT_CONFIG["latencyProfile"],
+		"announceStatus": asBool(config.get("announceStatus"), DEFAULT_CONFIG["announceStatus"]),
+		"useFec": asBool(config.get("useFec"), DEFAULT_CONFIG["useFec"]),
+		"verboseLogging": asBool(config.get("verboseLogging"), DEFAULT_CONFIG["verboseLogging"]),
 	}
 
 
@@ -165,7 +186,7 @@ class SettingsDialog(wx.Dialog):
 		self._config = dict(config)
 
 		mainSizer = wx.BoxSizer(wx.VERTICAL)
-		grid = wx.FlexGridSizer(rows=6, cols=2, vgap=8, hgap=8)
+		grid = wx.FlexGridSizer(rows=9, cols=2, vgap=8, hgap=8)
 		grid.AddGrowableCol(1, 1)
 
 		self.hostCtrl = wx.TextCtrl(self, value=str(self._config["host"]))
@@ -187,6 +208,12 @@ class SettingsDialog(wx.Dialog):
 			],
 		)
 		self.startupChoice.SetSelection(list(STARTUP_MODES).index(self._config["startupMode"]))
+		self.announceStatusCheck = wx.CheckBox(self, label=_("Announce connection status messages"))
+		self.announceStatusCheck.SetValue(bool(self._config["announceStatus"]))
+		self.useFecCheck = wx.CheckBox(self, label=_("Use Opus packet-loss recovery"))
+		self.useFecCheck.SetValue(bool(self._config["useFec"]))
+		self.verboseLoggingCheck = wx.CheckBox(self, label=_("Verbose diagnostic logging"))
+		self.verboseLoggingCheck.SetValue(bool(self._config["verboseLogging"]))
 
 		for label, control in (
 			(_("Server host:"), self.hostCtrl),
@@ -197,6 +224,9 @@ class SettingsDialog(wx.Dialog):
 			(_("Startup action:"), self.startupChoice),
 		):
 			grid.Add(wx.StaticText(self, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
+			grid.Add(control, 1, wx.EXPAND)
+		for control in (self.announceStatusCheck, self.useFecCheck, self.verboseLoggingCheck):
+			grid.Add(wx.StaticText(self, label=""), 0, wx.ALIGN_CENTER_VERTICAL)
 			grid.Add(control, 1, wx.EXPAND)
 
 		mainSizer.Add(grid, 1, wx.ALL | wx.EXPAND, 12)
@@ -213,6 +243,9 @@ class SettingsDialog(wx.Dialog):
 			"bitrate": self.bitrateCtrl.GetValue(),
 			"latencyProfile": LATENCY_PROFILES[self.latencyChoice.GetSelection()],
 			"startupMode": STARTUP_MODES[self.startupChoice.GetSelection()],
+			"announceStatus": self.announceStatusCheck.GetValue(),
+			"useFec": self.useFecCheck.GetValue(),
+			"verboseLogging": self.verboseLoggingCheck.GetValue(),
 		})
 
 
@@ -225,6 +258,8 @@ class AudioClientProcess:
 		self._startedAt = None
 		self._stopping = False
 		self._exitCallback = exitCallback
+		self._announceStatus = DEFAULT_CONFIG["announceStatus"]
+		self._verboseLogging = DEFAULT_CONFIG["verboseLogging"]
 
 	def isRunning(self):
 		return self._process is not None and self._process.poll() is None
@@ -237,12 +272,14 @@ class AudioClientProcess:
 
 	def start(self, role, config):
 		self.stop()
+		self._announceStatus = bool(config.get("announceStatus", DEFAULT_CONFIG["announceStatus"]))
+		self._verboseLogging = bool(config.get("verboseLogging", DEFAULT_CONFIG["verboseLogging"]))
 		if not os.path.exists(HELPER_PATH):
-			ui.message(_("Remote audio helper is missing"))
+			self._speak(_("Remote audio helper is missing"))
 			return
 		keyError = _validateKey(str(config.get("key") or "").strip())
 		if keyError is not None:
-			ui.message(keyError)
+			self._speak(keyError)
 			return
 
 		self._role = role
@@ -261,6 +298,8 @@ class AudioClientProcess:
 		args.extend([
 			"--opus-frame-ms", str(latency["opusFrameMs"]),
 		])
+		if not config.get("useFec", DEFAULT_CONFIG["useFec"]):
+			args.append("--disable-fec")
 		if role == "publisher":
 			args.extend([
 				"--exclude-pid", str(os.getpid()),
@@ -293,15 +332,29 @@ class AudioClientProcess:
 		except Exception as e:
 			self._process = None
 			log.error("Failed to start remote audio helper", exc_info=True)
-			ui.message(_("Failed to start remote audio: {error}").format(error=e))
+			self._speak(_("Failed to start remote audio: {error}").format(error=e))
 			return
 
 		self._readerThread = threading.Thread(target=self._readOutput, name="remoteAudioClientOutput", daemon=True)
 		self._readerThread.start()
 		if role == "subscriber":
-			ui.message(_("Connecting to remote audio"))
+			self._speakStatus(_("Connecting to remote audio"))
 		else:
-			ui.message(_("Sending this computer's audio"))
+			self._speakStatus(_("Sending this computer's audio"))
+
+	def _speak(self, message):
+		if wx.IsMainThread():
+			ui.message(message)
+		else:
+			wx.CallAfter(ui.message, message)
+
+	def _speakStatus(self, message):
+		if self._announceStatus:
+			self._speak(message)
+
+	def _queueStatus(self, message):
+		if self._announceStatus:
+			wx.CallAfter(ui.message, message)
 
 	def stop(self):
 		process = self._process
@@ -363,7 +416,7 @@ class AudioClientProcess:
 			if not self._stopping and self._process is process:
 				self._process = None
 				self._role = None
-				wx.CallAfter(ui.message, _("Remote audio stopped"))
+				wx.CallAfter(self._speakStatus, _("Remote audio stopped"))
 				if exitCode:
 					log.warning("Remote audio helper exited with code %s", exitCode)
 			if self._exitCallback is not None:
@@ -381,19 +434,18 @@ class AudioClientProcess:
 		if message:
 			self._lastMessage = message
 		eventName = event.get("event")
-		# Echo every helper event into NVDA's log so we can debug timing without
-		# having to instrument the addon on the user's side.
-		log.info("remoteAudio helper: %s", line)
+		if self._verboseLogging or eventName != "diagnostic":
+			log.info("remoteAudio helper: %s", line)
 		if eventName == "connected":
 			if event.get("role") == "subscriber":
-				wx.CallAfter(ui.message, _("Remote audio connected for receiving"))
+				self._queueStatus(_("Remote audio connected for receiving"))
 			else:
-				wx.CallAfter(ui.message, _("Remote audio connected for sending"))
+				self._queueStatus(_("Remote audio connected for sending"))
 		elif eventName == "error":
 			wx.CallAfter(ui.message, _("Remote audio error: {message}").format(message=message))
 			log.error("Remote audio helper error: %s", line)
 		elif eventName == "status" and message in ("Capture started.", "Listening for remote audio."):
-			wx.CallAfter(ui.message, _(message))
+			self._queueStatus(_(message))
 
 
 class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
@@ -441,6 +493,12 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 			],
 		)
 		self.startupChoice.SetSelection(list(STARTUP_MODES).index(self._config["startupMode"]))
+		self.announceStatusCheck = helper.addItem(wx.CheckBox(self, label=_("Announce connection status messages")))
+		self.announceStatusCheck.SetValue(bool(self._config["announceStatus"]))
+		self.useFecCheck = helper.addItem(wx.CheckBox(self, label=_("Use Opus packet-loss recovery")))
+		self.useFecCheck.SetValue(bool(self._config["useFec"]))
+		self.verboseLoggingCheck = helper.addItem(wx.CheckBox(self, label=_("Verbose diagnostic logging")))
+		self.verboseLoggingCheck.SetValue(bool(self._config["verboseLogging"]))
 
 	def isValid(self):
 		# Empty key is allowed at save time so the user can come back later, but
@@ -462,6 +520,9 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 			"bitrate": self.bitrateCtrl.GetValue(),
 			"latencyProfile": LATENCY_PROFILES[self.latencyChoice.GetSelection()],
 			"startupMode": STARTUP_MODES[self.startupChoice.GetSelection()],
+			"announceStatus": self.announceStatusCheck.GetValue(),
+			"useFec": self.useFecCheck.GetValue(),
+			"verboseLogging": self.verboseLoggingCheck.GetValue(),
 		})
 
 
@@ -477,21 +538,40 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._receiveItem = None
 		self._sendItem = None
 		self._autoRole = None
+		self._autoStartCall = None
 		self._autoRetryCall = None
+		self._remoteScriptSyncCall = None
 		self._manualStop = False
+		self._terminating = False
+		self._remoteLocalScripts = (
+			self.script_receiveRemoteAudio,
+			self.script_sendRemoteAudio,
+			self.script_disconnectRemoteAudio,
+			self.script_reconnectRemoteAudio,
+			self.script_reportRemoteAudioStatus,
+		)
 		if RemoteAudioSettingsPanel not in gui.settingsDialogs.NVDASettingsDialog.categoryClasses:
 			gui.settingsDialogs.NVDASettingsDialog.categoryClasses.append(RemoteAudioSettingsPanel)
 		self._createMenu()
 		if server_installer.is_installed():
 			server_installer.ensure_installed_server_ready()
-		core.callLater(1500, self._autoStartFromSettings)
+		self._autoStartCall = core.callLater(1500, self._autoStartFromSettings)
+		self._remoteScriptSyncCall = core.callLater(1500, self._syncRemoteLocalScripts)
 
 	def terminate(self):
-		self._client.stop()
+		self._terminating = True
+		if self._autoStartCall is not None:
+			self._autoStartCall.Stop()
+			self._autoStartCall = None
 		if self._autoRetryCall is not None:
 			self._autoRetryCall.Stop()
 			self._autoRetryCall = None
+		if self._remoteScriptSyncCall is not None:
+			self._remoteScriptSyncCall.Stop()
+			self._remoteScriptSyncCall = None
+		self._removeRemoteLocalScripts()
 		self._destroyMenu()
+		self._client.stop()
 		try:
 			gui.settingsDialogs.NVDASettingsDialog.categoryClasses.remove(RemoteAudioSettingsPanel)
 		except Exception:
@@ -528,7 +608,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 	def _updateMenuChecks(self):
 		"""Sync the Receive/Send check marks with the current helper role."""
-		if self._receiveItem is None or self._sendItem is None:
+		if self._terminating or self._menu is None or self._receiveItem is None or self._sendItem is None:
 			return
 		role = self._client.currentRole()
 		try:
@@ -538,15 +618,17 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			log.debug("Failed to update remote audio menu checks", exc_info=True)
 
 	def _destroyMenu(self):
+		menuRoot = self._menuRoot
+		menu = self._menu
+		self._menuRoot = None
+		self._menu = None
+		self._receiveItem = None
+		self._sendItem = None
 		try:
-			if self._menuRoot is not None:
-				gui.mainFrame.sysTrayIcon.toolsMenu.Remove(self._menuRoot)
-				self._menuRoot = None
-			if self._menu is not None:
-				self._menu.Destroy()
-				self._menu = None
-			self._receiveItem = None
-			self._sendItem = None
+			if menuRoot is not None:
+				gui.mainFrame.sysTrayIcon.toolsMenu.Remove(menuRoot)
+			if menu is not None:
+				menu.Destroy()
 		except Exception:
 			log.debug("Failed to destroy remote audio menu", exc_info=True)
 
@@ -646,7 +728,56 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	def onSettings(self, event):
 		gui.mainFrame.popupSettingsDialog(gui.settingsDialogs.NVDASettingsDialog, RemoteAudioSettingsPanel)
 
+	def _runningRemoteClient(self):
+		try:
+			remoteClientPackage = importlib.import_module("_remoteClient")
+		except Exception:
+			return None
+		return getattr(remoteClientPackage, "_remoteClient", None)
+
+	def _syncRemoteLocalScripts(self):
+		self._remoteScriptSyncCall = None
+		if self._terminating:
+			return
+		remoteClient = self._runningRemoteClient()
+		localScripts = getattr(remoteClient, "localScripts", None)
+		if localScripts is not None:
+			for scriptFunc in self._remoteLocalScripts:
+				localScripts.add(scriptFunc)
+		self._remoteScriptSyncCall = core.callLater(10000, self._syncRemoteLocalScripts)
+
+	def _removeRemoteLocalScripts(self):
+		remoteClient = self._runningRemoteClient()
+		localScripts = getattr(remoteClient, "localScripts", None)
+		if localScripts is None:
+			return
+		for scriptFunc in self._remoteLocalScripts:
+			localScripts.discard(scriptFunc)
+
+	@script(description=_("Receive remote audio"))
+	def script_receiveRemoteAudio(self, gesture):
+		self.onReceive(None)
+
+	@script(description=_("Send this computer's audio"))
+	def script_sendRemoteAudio(self, gesture):
+		self.onSend(None)
+
+	@script(description=_("Disconnect remote audio"))
+	def script_disconnectRemoteAudio(self, gesture):
+		self.onStop(None)
+
+	@script(description=_("Reconnect remote audio"))
+	def script_reconnectRemoteAudio(self, gesture):
+		self.onReconnect(None)
+
+	@script(description=_("Report remote audio status"))
+	def script_reportRemoteAudioStatus(self, gesture):
+		self.onStatus(None)
+
 	def _autoStartFromSettings(self):
+		self._autoStartCall = None
+		if self._terminating:
+			return
 		self._config = _loadConfig()
 		mode = _resolveStartupMode(self._config)
 		if mode == "disabled":
@@ -659,6 +790,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._updateMenuChecks()
 
 	def _onClientExit(self, role, exitCode, stopping):
+		if self._terminating:
+			return
 		# The helper has already cleared its role by the time this fires; refresh the menu.
 		self._updateMenuChecks()
 		if stopping or self._manualStop or not self._autoRole or role != self._autoRole:

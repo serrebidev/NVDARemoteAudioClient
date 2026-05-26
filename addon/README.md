@@ -20,13 +20,22 @@ NVDA add-on side of [NVDA Remote Audio Client](../README.md). Spawns and supervi
   "key": "",
   "bitrate": 128000,
   "startupMode": "auto",
-  "latencyProfile": "auto"
+  "latencyProfile": "auto",
+  "announceStatus": true,
+  "useFec": true,
+  "verboseLogging": false
 }
 ```
 
 - `key` is required. The plugin refuses to start if it's blank.
 - `startupMode`: `auto` | `disabled` | `subscriber` | `publisher`. `auto` picks `publisher` if `C:\NVDARemoteAudioServer\NVDARemoteAudioServer.exe` or `%LOCALAPPDATA%\NVDARemoteAudioServer\NVDARemoteAudioServer.exe` exists on the machine, else `subscriber`.
 - `latencyProfile`: `auto` | `lan` | `tailscale` | `internet`. `auto` picks based on the `host` value (private IP → LAN, 100.64.0.0/10 or `*.ts.net` → Tailscale, else Internet).
+
+- `announceStatus`: when false, routine connect/listen/capture/stopped messages are kept quiet. Errors and explicit commands such as status still speak.
+- `useFec`: when true, the helper enables Opus in-band packet-loss recovery. Turning it off appends `--disable-fec` for advanced low-overhead LAN testing.
+- `verboseLogging`: when true, helper diagnostic lines are written to `nvda.log`. Errors and non-diagnostic lifecycle events are still logged when this is false.
+
+The add-on also exposes unbound NVDA Input Gestures under the `NVDA Remote Audio` category: receive, send, disconnect, reconnect, and report status. Those gestures are registered with NVDA Remote's local-script list so they still run on the machine where you press them while you are controlling another machine with F11.
 
 ## How the auto-retry works
 
@@ -44,7 +53,7 @@ NVDARemoteAudioHelper.exe --role publisher --host <host> --port <port> --key <ke
   --opus-frame-ms <n> --exclude-pid <NVDA pid> --bitrate <bps>
 ```
 
-`--exclude-pid` is set to NVDA's own PID (`os.getpid()` from inside the plugin), which is what makes WASAPI drop NVDA's audio from the captured stream.
+`--exclude-pid` is set to NVDA's own PID (`os.getpid()` from inside the plugin), which is what makes WASAPI drop NVDA's audio from the captured stream. When `useFec` is false, the plugin adds `--disable-fec` to either role.
 
 ## Build a `.nvda-addon`
 

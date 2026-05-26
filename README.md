@@ -45,6 +45,12 @@ Wire format: 48 kHz stereo Opus over UDP. LAN uses 5 ms Opus packets; Tailscale 
 
 Override with `Settings > NVDA Remote Audio > Latency profile`.
 
+## NVDA controls
+
+The Tools menu exposes receive, send, reconnect, disconnect, status, server install, firewall, and settings actions. The same receive/send/disconnect/reconnect/status actions are also available as unbound NVDA Input Gestures under the `NVDA Remote Audio` category. While you are controlling another machine with NVDA Remote, those gestures stay local instead of being forwarded as keystrokes.
+
+Routine connection status messages can be muted in settings for quieter sessions. Errors and explicit status commands still speak. Opus packet-loss recovery is enabled by default and can be disabled from settings for advanced LAN testing. Verbose diagnostic logging can also be enabled when you need helper timing details in `nvda.log`.
+
 ## "Automatic" startup
 
 If `C:\NVDARemoteAudioServer\NVDARemoteAudioServer.exe` or `%LOCALAPPDATA%\NVDARemoteAudioServer\NVDARemoteAudioServer.exe` exists on the machine, the add-on starts as **publisher** (sends). Otherwise it starts as **subscriber** (receives). Override under `Startup action` in settings.

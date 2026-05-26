@@ -30,6 +30,10 @@
   <li><strong>Automatic</strong> — picked from the host you set: LAN for private/loopback IPs, Tailscale for 100.64.0.0/10 or *.ts.net, Internet for anything else.</li>
 </ul>
 
+<h2>Controls and status</h2>
+<p>The Tools menu provides receive, send, reconnect, disconnect, status, server install, firewall, and settings actions. Receive, send, disconnect, reconnect, and status are also available as unbound NVDA Input Gestures under the <strong>NVDA Remote Audio</strong> category. While you are controlling another machine with NVDA Remote, those gestures stay local instead of being forwarded as keystrokes.</p>
+<p>In settings, clear <strong>Announce connection status messages</strong> to keep routine connect/listen/capture/stopped messages quiet. Errors and explicit status commands still speak. <strong>Use Opus packet-loss recovery</strong> controls Opus in-band FEC, which is enabled by default. Enable <strong>Verbose diagnostic logging</strong> when you need helper timing details in NVDA's log.</p>
+
 <h2>Privacy</h2>
 <p>Publisher mode uses Windows process-loopback exclusion to drop NVDA from the captured audio, so NVDA speech and NVDA tones are not sent by this add-on. Other app audio is sent unencrypted over UDP &mdash; protect the link yourself (LAN, VPN, or Tailscale).</p>
 </body>
