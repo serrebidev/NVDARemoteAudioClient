@@ -72,7 +72,7 @@ LATENCY_SETTINGS = {
 def _loadConfig():
 	config = dict(DEFAULT_CONFIG)
 	try:
-		with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+		with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
 			loaded = json.load(f)
 		if isinstance(loaded, dict):
 			config.update(loaded)
@@ -356,21 +356,31 @@ class AudioClientProcess:
 		if self._announceStatus:
 			wx.CallAfter(ui.message, message)
 
-	def stop(self):
+	def stop(self, wait=True):
 		process = self._process
 		if process is None:
 			return
 		self._stopping = True
+		self._process = None
+		self._role = None
+		self._lastMessage = _("Not connected")
+		self._startedAt = None
 		if process.poll() is None:
 			# Graceful shutdown: close stdin, helper sees EOF and tears the session down,
 			# releasing WASAPI process-loopback handles and closing TCP/UDP cleanly.
-			# Only TerminateProcess if it doesn't exit on its own.
+			# During NVDA shutdown, don't wait on a child process from the main thread.
 			try:
 				if process.stdin is not None:
 					try:
 						process.stdin.close()
 					except Exception:
 						pass
+				if not wait:
+					try:
+						process.terminate()
+					except Exception:
+						pass
+					return
 				try:
 					process.wait(timeout=2)
 				except subprocess.TimeoutExpired:
@@ -387,10 +397,9 @@ class AudioClientProcess:
 					process.kill()
 				except Exception:
 					pass
-		self._process = None
-		self._role = None
-		self._lastMessage = _("Not connected")
-		self._startedAt = None
+
+	def disableExitCallback(self):
+		self._exitCallback = None
 
 	def statusMessage(self):
 		if not self.isRunning():
@@ -559,6 +568,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._remoteScriptSyncCall = core.callLater(1500, self._syncRemoteLocalScripts)
 
 	def terminate(self):
+		log.info("remoteAudioClient terminate starting")
 		self._terminating = True
 		if self._autoStartCall is not None:
 			self._autoStartCall.Stop()
@@ -571,11 +581,13 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			self._remoteScriptSyncCall = None
 		self._removeRemoteLocalScripts()
 		self._destroyMenu()
-		self._client.stop()
+		self._client.disableExitCallback()
+		self._client.stop(wait=False)
 		try:
 			gui.settingsDialogs.NVDASettingsDialog.categoryClasses.remove(RemoteAudioSettingsPanel)
 		except Exception:
 			pass
+		log.info("remoteAudioClient terminate finished")
 		super().terminate()
 
 	def _createMenu(self):
