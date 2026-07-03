@@ -14,6 +14,7 @@ import tempfile
 import threading
 import urllib.error
 import urllib.request
+import winreg
 import zipfile
 from ctypes import wintypes
 
@@ -31,6 +32,8 @@ SERVER_EXE_NAME = "NVDARemoteAudioServer.exe"
 SCHEDULED_TASK_NAME = "NVDARemoteAudioServer"
 STARTUP_SHORTCUT_NAME = "NVDARemoteAudioServer.lnk"
 STARTUP_SHORTCUT_DESCRIPTION = "Starts NVDARemoteAudioServer for NVDA Remote Audio Client"
+RUN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
+RUN_VALUE_NAME = "NVDARemoteAudioServer"
 
 # Searched in order. The first existing match wins.
 INSTALL_DIR_CANDIDATES = (
@@ -121,12 +124,42 @@ def offer_install(parent, on_done=None):
 	thread.start()
 
 
-def _install_worker(on_done):
+def offer_update_or_repair(parent, on_done=None):
+	"""Download the latest server release over the current install, then repair startup/firewall."""
+	exe = find_server_exe()
+	if exe is None:
+		offer_install(parent, on_done=on_done)
+		return
+	answer = gui.messageBox(
+		_(
+			"Download and install the latest audio server over the existing copy?\n"
+			"\n"
+			"The current server process will be stopped and restarted. Your remote audio client settings are not changed."
+		),
+		_("NVDA Remote Audio: update audio server?"),
+		wx.YES_NO | wx.ICON_QUESTION,
+		parent,
+	)
+	if answer != wx.YES:
+		if on_done is not None:
+			wx.CallAfter(on_done, False)
+		return
+	threading.Thread(
+		target=_install_worker,
+		args=(on_done, True),
+		name="updateNVDARemoteAudioServer",
+		daemon=True,
+	).start()
+
+
+def _install_worker(on_done, replace_existing=False):
 	try:
 		wx.CallAfter(ui.message, _("Downloading NVDARemoteAudioServer"))
 		download_url = _resolve_windows_zip_url()
-		install_dir = _pick_install_dir()
+		install_dir = _pick_install_dir(existing_ok=True)
 		os.makedirs(install_dir, exist_ok=True)
+		if replace_existing:
+			_stop_server_if_running()
 
 		zip_path = _download_to_temp(download_url)
 		try:
@@ -174,9 +207,10 @@ def _install_worker(on_done):
 			wx.CallAfter(on_done, True)
 	except Exception as e:
 		log.error("Failed to install NVDARemoteAudioServer", exc_info=True)
-		wx.CallAfter(
-			ui.message,
+		_call_message_box(
 			_("Failed to install audio server: {error}").format(error=e),
+			_("NVDA Remote Audio"),
+			wx.OK | wx.ICON_ERROR,
 		)
 		if on_done is not None:
 			wx.CallAfter(on_done, False)
@@ -214,6 +248,11 @@ def _ensure_installed_server_ready_worker(exe, on_done, announce):
 		log.error("Failed to repair or start NVDARemoteAudioServer", exc_info=True)
 		if announce:
 			wx.CallAfter(ui.message, _("Failed to start or repair audio server: {error}").format(error=e))
+			_call_message_box(
+				_("Failed to start or repair audio server: {error}").format(error=e),
+				_("NVDA Remote Audio"),
+				wx.OK | wx.ICON_ERROR,
+			)
 	finally:
 		if on_done is not None:
 			wx.CallAfter(on_done, server_ok)
@@ -270,7 +309,11 @@ def _extract_zip(zip_path, install_dir):
 		zf.extractall(install_dir)
 
 
-def _pick_install_dir():
+def _pick_install_dir(existing_ok=False):
+	if existing_ok:
+		exe = find_server_exe()
+		if exe is not None:
+			return os.path.dirname(exe)
 	primary = INSTALL_DIR_CANDIDATES[0]
 	try:
 		os.makedirs(primary, exist_ok=True)
@@ -290,10 +333,51 @@ def _pick_install_dir():
 
 def _ensure_startup_entry(exe):
 	"""Create a per-user startup entry. Returns False if all persistence paths fail."""
+	if _register_run_key(exe):
+		_delete_startup_shortcut()
+		_delete_legacy_logon_task()
+		return True
 	if _register_startup_shortcut(exe):
+		_delete_run_key()
 		_delete_legacy_logon_task()
 		return True
 	return _register_logon_task(exe)
+
+
+def _quote_command_path(path):
+	return '"{0}"'.format(path.replace('"', r'\"'))
+
+
+def _register_run_key(exe):
+	try:
+		with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY_PATH, 0, winreg.KEY_SET_VALUE) as key:
+			winreg.SetValueEx(key, RUN_VALUE_NAME, 0, winreg.REG_SZ, _quote_command_path(exe))
+		return True
+	except OSError as e:
+		log.warning("Could not register NVDARemoteAudioServer Run key: %s", e)
+		return False
+
+
+def _delete_run_key():
+	try:
+		with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY_PATH, 0, winreg.KEY_SET_VALUE) as key:
+			winreg.DeleteValue(key, RUN_VALUE_NAME)
+	except FileNotFoundError:
+		pass
+	except OSError as e:
+		log.debug("Could not delete NVDARemoteAudioServer Run key: %s", e)
+
+
+def _run_key_exists():
+	try:
+		with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY_PATH, 0, winreg.KEY_QUERY_VALUE) as key:
+			winreg.QueryValueEx(key, RUN_VALUE_NAME)
+		return True
+	except FileNotFoundError:
+		return False
+	except OSError as e:
+		log.debug("Could not query NVDARemoteAudioServer Run key: %s", e)
+		return False
 
 
 def _startup_shortcut_path():
@@ -309,6 +393,22 @@ def _startup_shortcut_path():
 		"Startup",
 	)
 	return os.path.join(startup_dir, STARTUP_SHORTCUT_NAME)
+
+
+def _startup_shortcut_exists():
+	shortcut_path = _startup_shortcut_path()
+	return bool(shortcut_path and os.path.isfile(shortcut_path))
+
+
+def _delete_startup_shortcut():
+	shortcut_path = _startup_shortcut_path()
+	if not shortcut_path:
+		return
+	try:
+		if os.path.isfile(shortcut_path):
+			os.unlink(shortcut_path)
+	except OSError as e:
+		log.debug("Could not delete NVDARemoteAudioServer startup shortcut: %s", e)
 
 
 def _register_startup_shortcut(exe):
@@ -388,6 +488,26 @@ def _delete_legacy_logon_task():
 		log.debug("Could not remove legacy NVDARemoteAudioServer logon task: %s", e)
 
 
+def _legacy_logon_task_exists():
+	try:
+		result = subprocess.run(
+			[
+				"schtasks",
+				"/query",
+				"/tn",
+				SCHEDULED_TASK_NAME,
+			],
+			capture_output=True,
+			text=True,
+			timeout=15,
+			creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+		)
+	except (subprocess.SubprocessError, FileNotFoundError) as e:
+		log.debug("Could not query legacy NVDARemoteAudioServer logon task: %s", e)
+		return False
+	return result.returncode == 0
+
+
 def _register_logon_task(exe):
 	"""Fallback: register a per-user logon scheduled task. Best effort."""
 	# /rl LIMITED keeps it user-context (no admin elevation needed).
@@ -435,6 +555,28 @@ def _start_server_if_needed(exe):
 	if _is_server_process_running():
 		return
 	_start_server_detached(exe)
+
+
+def _stop_server_if_running():
+	if not _is_server_process_running():
+		return True
+	try:
+		result = subprocess.run(
+			[
+				"taskkill",
+				"/IM",
+				SERVER_EXE_NAME,
+				"/F",
+			],
+			capture_output=True,
+			text=True,
+			timeout=20,
+			creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+		)
+	except (subprocess.SubprocessError, FileNotFoundError) as e:
+		log.warning("Could not stop NVDARemoteAudioServer: %s", e)
+		return False
+	return result.returncode == 0 or not _is_server_process_running()
 
 
 def _is_server_process_running():
@@ -518,6 +660,32 @@ def _ensure_firewall_rules(exe):
 		return False
 
 	return True
+
+
+def _remove_firewall_rules():
+	"""Best-effort removal of the inbound rules this add-on created."""
+	if not _firewall_rules_exist():
+		return True
+	tcp_name_quoted = FIREWALL_RULE_TCP.replace("'", "''")
+	udp_name_quoted = FIREWALL_RULE_UDP.replace("'", "''")
+	ps_command = (
+		"$ErrorActionPreference='SilentlyContinue';"
+		f"Remove-NetFirewallRule -DisplayName '{tcp_name_quoted}';"
+		f"Remove-NetFirewallRule -DisplayName '{udp_name_quoted}';"
+	)
+	parameters = (
+		'-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command '
+		f'"{ps_command}"'
+	)
+	try:
+		exit_code = _run_elevated("powershell.exe", parameters, wait_timeout_ms=60000)
+	except PermissionError:
+		log.info("User declined UAC for firewall rule removal")
+		return False
+	except OSError as e:
+		log.warning("Could not launch elevated PowerShell for firewall removal: %s", e)
+		return False
+	return exit_code == 0
 
 
 def _firewall_rules_exist():
@@ -606,11 +774,116 @@ def add_firewall_rules_only(parent, on_done=None):
 		if ok:
 			wx.CallAfter(ui.message, _("Firewall rules added"))
 		else:
-			wx.CallAfter(
-				ui.message,
-				_("Could not add firewall rules. Allow inbound TCP and UDP port {port} manually.").format(port=SERVER_PORT),
+			message = _("Could not add firewall rules. Allow inbound TCP and UDP port {port} manually.").format(port=SERVER_PORT)
+			wx.CallAfter(ui.message, message)
+			_call_message_box(
+				message,
+				_("NVDA Remote Audio"),
+				wx.OK | wx.ICON_WARNING,
 			)
 		if on_done is not None:
 			wx.CallAfter(on_done, ok)
 
 	threading.Thread(target=worker, name="addFirewallRules", daemon=True).start()
+
+
+def offer_remove(parent, on_done=None):
+	exe = find_server_exe()
+	if exe is None and not (_run_key_exists() or _startup_shortcut_exists() or _legacy_logon_task_exists() or _firewall_rules_exist()):
+		gui.messageBox(
+			_("Audio server is not installed."),
+			_("NVDA Remote Audio"),
+			wx.OK | wx.ICON_INFORMATION,
+			parent,
+		)
+		if on_done is not None:
+			wx.CallAfter(on_done, False)
+		return
+
+	answer = gui.messageBox(
+		_(
+			"Disable the audio server on this computer?\n"
+			"\n"
+			"This stops the server and removes startup and firewall entries. Your NVDA Remote Audio Client settings are not changed."
+		),
+		_("NVDA Remote Audio: disable audio server?"),
+		wx.YES_NO | wx.ICON_QUESTION,
+		parent,
+	)
+	if answer != wx.YES:
+		if on_done is not None:
+			wx.CallAfter(on_done, False)
+		return
+
+	delete_files = False
+	if exe is not None:
+		delete_files = gui.messageBox(
+			_("Also delete the installed server files at {path}?").format(path=os.path.dirname(exe)),
+			_("NVDA Remote Audio"),
+			wx.YES_NO | wx.ICON_QUESTION,
+			parent,
+		) == wx.YES
+
+	threading.Thread(
+		target=_remove_worker,
+		args=(exe, delete_files, on_done),
+		name="removeNVDARemoteAudioServer",
+		daemon=True,
+	).start()
+
+
+def _remove_worker(exe, delete_files, on_done):
+	ok = True
+	try:
+		if not _stop_server_if_running():
+			ok = False
+		_delete_run_key()
+		_delete_startup_shortcut()
+		_delete_legacy_logon_task()
+		if not _remove_firewall_rules():
+			ok = False
+		if delete_files and exe is not None:
+			install_dir = os.path.dirname(exe)
+			try:
+				shutil.rmtree(install_dir)
+			except OSError as e:
+				ok = False
+				log.warning("Could not delete audio server install directory %s: %s", install_dir, e)
+		if ok:
+			wx.CallAfter(ui.message, _("Audio server disabled"))
+		else:
+			_call_message_box(
+				_(
+					"Audio server cleanup finished with warnings. Some startup, firewall, or file entries may need to be removed manually."
+				),
+				_("NVDA Remote Audio"),
+				wx.OK | wx.ICON_WARNING,
+			)
+	except Exception as e:
+		ok = False
+		log.error("Failed to remove NVDARemoteAudioServer", exc_info=True)
+		_call_message_box(
+			_("Failed to remove audio server: {error}").format(error=e),
+			_("NVDA Remote Audio"),
+			wx.OK | wx.ICON_ERROR,
+		)
+	finally:
+		if on_done is not None:
+			wx.CallAfter(on_done, ok)
+
+
+def server_status():
+	exe = find_server_exe()
+	return {
+		"installed": exe is not None,
+		"path": exe or "",
+		"running": _is_server_process_running(),
+		"startupRunKey": _run_key_exists(),
+		"startupShortcut": _startup_shortcut_exists(),
+		"legacyTask": _legacy_logon_task_exists(),
+		"firewallRules": _firewall_rules_exist(),
+	}
+
+
+def _call_message_box(message, caption, style):
+	wx.CallAfter(gui.messageBox, message, caption, style)

@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
-using System.Threading.Channels;
 using Microsoft.Win32.SafeHandles;
 
 namespace NVDARemoteAudioHelper;
@@ -22,7 +21,7 @@ internal sealed class ProcessLoopbackCapture
 		_frameBuffer = new short[Math.Clamp(frameSamplesPerChannel, 120, 960) * Channels];
 	}
 
-	public async Task RunAsync(ChannelWriter<short[]> writer, CancellationToken cancellationToken)
+	public async Task RunAsync(AudioFrameQueue writer, CancellationToken cancellationToken)
 	{
 		IAudioClient? audioClient = null;
 		IAudioCaptureClient? captureClient = null;
@@ -54,7 +53,7 @@ internal sealed class ProcessLoopbackCapture
 		}
 		finally
 		{
-			writer.TryComplete();
+			writer.Complete();
 			if (audioClient is not null)
 			{
 				try
@@ -164,7 +163,7 @@ internal sealed class ProcessLoopbackCapture
 		return (IAudioCaptureClient)service;
 	}
 
-	private unsafe void DrainCapturePackets(IAudioCaptureClient captureClient, ChannelWriter<short[]> writer)
+	private unsafe void DrainCapturePackets(IAudioCaptureClient captureClient, AudioFrameQueue writer)
 	{
 		while (true)
 		{
@@ -203,7 +202,7 @@ internal sealed class ProcessLoopbackCapture
 		}
 	}
 
-	private void AppendSamples(ReadOnlySpan<short> samples, ChannelWriter<short[]> writer)
+	private void AppendSamples(ReadOnlySpan<short> samples, AudioFrameQueue writer)
 	{
 		while (!samples.IsEmpty)
 		{
@@ -215,7 +214,7 @@ internal sealed class ProcessLoopbackCapture
 		}
 	}
 
-	private void AppendSilence(int sampleCount, ChannelWriter<short[]> writer)
+	private void AppendSilence(int sampleCount, AudioFrameQueue writer)
 	{
 		while (sampleCount > 0)
 		{
@@ -227,16 +226,19 @@ internal sealed class ProcessLoopbackCapture
 		}
 	}
 
-	private void PublishFrameIfReady(ChannelWriter<short[]> writer)
+	private void PublishFrameIfReady(AudioFrameQueue writer)
 	{
 		if (_frameOffset < _frameBuffer.Length)
 		{
 			return;
 		}
 
-		var frame = new short[_frameBuffer.Length];
-		Array.Copy(_frameBuffer, frame, frame.Length);
-		writer.TryWrite(frame);
+		var frame = new PooledAudioFrame(_frameBuffer.Length);
+		_frameBuffer.AsSpan().CopyTo(frame.Span);
+		if (!writer.TryWrite(frame))
+		{
+			frame.Dispose();
+		}
 		_frameOffset = 0;
 	}
 

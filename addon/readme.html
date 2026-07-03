@@ -11,9 +11,9 @@
 <h2>First-time setup</h2>
 <ol>
   <li>Install this add-on on both machines.</li>
-  <li>On the machine that should send audio: open <strong>NVDA menu &gt; Tools &gt; NVDA Remote Audio &gt; Install audio server (this machine sends audio)...</strong> The add-on downloads the latest <a href="https://github.com/haitun001/NVDARemoteAudioServer">NVDARemoteAudioServer</a> from GitHub, installs it, starts it, and registers a per-user Startup shortcut so it survives reboots. It will also prompt for UAC to add Windows Firewall inbound allow rules for TCP and UDP port 6838. If you decline UAC, run the helper menu item <em>Add firewall rules for audio server...</em> later, or open the port manually.</li>
+  <li>On the machine that should send audio: open <strong>NVDA menu &gt; Tools &gt; NVDA Remote Audio &gt; Install audio server (this machine sends audio)...</strong> The add-on downloads the latest <a href="https://github.com/haitun001/NVDARemoteAudioServer">NVDARemoteAudioServer</a> from GitHub, installs it, starts it, and registers a per-user startup entry so it survives reboots. It will also prompt for UAC to add Windows Firewall inbound allow rules for TCP and UDP port 6838. If you decline UAC, run the helper menu item <em>Add firewall rules for audio server...</em> later, or open the port manually.</li>
   <li>On both machines, open <strong>NVDA menu &gt; Preferences &gt; Settings &gt; NVDA Remote Audio</strong>.</li>
-  <li>Set the same <strong>Host</strong>, <strong>Port</strong> (6838 by default), and <strong>Key</strong> on both.</li>
+  <li>Set the same <strong>Host</strong>, <strong>Port</strong> (6838 by default), and <strong>Session key / room name</strong> on both. The key is required, but it is not an encryption password.</li>
   <li>Restart NVDA, or use the Tools menu items to connect manually. If you skipped step 2, picking <strong>Send this computer's audio</strong> will offer to install the server then.</li>
 </ol>
 
@@ -31,7 +31,7 @@
 </ul>
 
 <h2>Controls and status</h2>
-<p>The Tools menu provides receive, send, reconnect, disconnect, status, server install, firewall, and settings actions. Receive, send, disconnect, reconnect, and status are also available as unbound NVDA Input Gestures under the <strong>NVDA Remote Audio</strong> category. While you are controlling another machine with NVDA Remote, those gestures stay local instead of being forwarded as keystrokes.</p>
+<p>The Tools menu provides receive, send, reconnect, disconnect, status, copy diagnostics, server install, server update/repair, firewall, server remove/disable, and settings actions. Receive, send, disconnect, reconnect, status, and copy diagnostics are also available as unbound NVDA Input Gestures under the <strong>NVDA Remote Audio</strong> category. While you are controlling another machine with NVDA Remote, those gestures stay local instead of being forwarded as keystrokes.</p>
 <p>In settings, clear <strong>Announce connection status messages</strong> to keep routine connect/listen/capture/stopped messages quiet. Errors and explicit status commands still speak. <strong>Use Opus packet-loss recovery</strong> controls Opus in-band FEC, which is enabled by default. Enable <strong>Verbose diagnostic logging</strong> when you need helper timing details in NVDA's log.</p>
 
 <h2>Privacy</h2>

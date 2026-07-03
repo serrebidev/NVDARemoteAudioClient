@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Threading.Channels;
 using Concentus;
 using Concentus.Enums;
 
@@ -29,19 +28,31 @@ internal static class AudioPublisher
 			["queue_capacity"] = channelCapacity,
 		});
 
-		var channel = Channel.CreateBounded<short[]>(new BoundedChannelOptions(channelCapacity)
-		{
-			SingleReader = true,
-			SingleWriter = true,
-			FullMode = BoundedChannelFullMode.DropOldest,
-		});
+		using var queue = new AudioFrameQueue(channelCapacity);
 
+		using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 		var capture = new ProcessLoopbackCapture(excludePid, packetSamplesPerChannel);
-		var captureTask = capture.RunAsync(channel.Writer, cancellationToken);
-		var encodeTask = EncodeAndSendLoopAsync(channel.Reader, session, bitrate, opusFrameMilliseconds, useInbandFec, cancellationToken);
+		var captureTask = capture.RunAsync(queue, linkedCts.Token);
+		var encodeTask = EncodeAndSendLoopAsync(queue, session, bitrate, opusFrameMilliseconds, useInbandFec, linkedCts.Token);
 
 		var completed = await Task.WhenAny(captureTask, encodeTask);
-		await completed;
+		try
+		{
+			await completed;
+		}
+		finally
+		{
+			linkedCts.Cancel();
+			queue.Complete();
+			try
+			{
+				await Task.WhenAll(captureTask, encodeTask).WaitAsync(TimeSpan.FromSeconds(2));
+			}
+			catch
+			{
+				// Preserve the original completion result.
+			}
+		}
 	}
 
 	public static async Task RunTestToneAsync(
@@ -69,34 +80,41 @@ internal static class AudioPublisher
 		var start = Stopwatch.StartNew();
 		var nextFrameAt = TimeSpan.Zero;
 
-		while (!cancellationToken.IsCancellationRequested)
+		try
 		{
-			for (var i = 0; i < packetSamplesPerChannel; i++)
+			while (!cancellationToken.IsCancellationRequested)
 			{
-				var value = (short)(Math.Sin(phase) * short.MaxValue * 0.12);
-				frame[i * 2] = value;
-				frame[(i * 2) + 1] = value;
-				phase += phaseStep;
-				if (phase >= Math.PI * 2.0)
+				for (var i = 0; i < packetSamplesPerChannel; i++)
 				{
-					phase -= Math.PI * 2.0;
+					var value = (short)(Math.Sin(phase) * short.MaxValue * 0.12);
+					frame[i * 2] = value;
+					frame[(i * 2) + 1] = value;
+					phase += phaseStep;
+					if (phase >= Math.PI * 2.0)
+					{
+						phase -= Math.PI * 2.0;
+					}
+				}
+
+				var encodedLength = EncodePacket(encoder, frame, packetSamplesPerChannel, opusBuffer);
+				await session.SendAudioAsync(sequence++, (ulong)start.ElapsedMilliseconds, opusBuffer.AsMemory(0, encodedLength), cancellationToken);
+
+				nextFrameAt += TimeSpan.FromMilliseconds(opusFrameMilliseconds);
+				var delay = nextFrameAt - start.Elapsed;
+				if (delay > TimeSpan.Zero)
+				{
+					await Task.Delay(delay, cancellationToken);
 				}
 			}
-
-			var encodedLength = EncodePacket(encoder, frame, packetSamplesPerChannel, opusBuffer);
-			await session.SendAudioAsync(sequence++, (ulong)start.ElapsedMilliseconds, opusBuffer.AsMemory(0, encodedLength), cancellationToken);
-
-			nextFrameAt += TimeSpan.FromMilliseconds(opusFrameMilliseconds);
-			var delay = nextFrameAt - start.Elapsed;
-			if (delay > TimeSpan.Zero)
-			{
-				await Task.Delay(delay, cancellationToken);
-			}
+		}
+		finally
+		{
+			(encoder as IDisposable)?.Dispose();
 		}
 	}
 
 	private static async Task EncodeAndSendLoopAsync(
-		ChannelReader<short[]> frames,
+		AudioFrameQueue frames,
 		RemoteAudioSession session,
 		int bitrate,
 		int opusFrameMilliseconds,
@@ -111,21 +129,37 @@ internal static class AudioPublisher
 		var nextDiagnosticAt = TimeSpan.FromSeconds(5);
 		var packetsSent = 0UL;
 
-		await foreach (var frame in frames.ReadAllAsync(cancellationToken))
+		try
 		{
-			var encodedLength = EncodePacket(encoder, frame, packetSamplesPerChannel, opusBuffer);
-			await session.SendAudioAsync(sequence++, (ulong)start.ElapsedMilliseconds, opusBuffer.AsMemory(0, encodedLength), cancellationToken);
-			packetsSent++;
-
-			if (start.Elapsed >= nextDiagnosticAt)
+			await foreach (var frame in frames.ReadAllAsync(cancellationToken))
 			{
-				JsonLog.Write("diagnostic", "Publisher audio statistics.", new Dictionary<string, object?>
+				try
 				{
-					["packets_sent"] = packetsSent,
-					["opus_frame_ms"] = opusFrameMilliseconds,
-				});
-				nextDiagnosticAt += TimeSpan.FromSeconds(5);
+					var encodedLength = EncodePacket(encoder, frame.ReadOnlySpan, packetSamplesPerChannel, opusBuffer);
+					await session.SendAudioAsync(sequence++, (ulong)start.ElapsedMilliseconds, opusBuffer.AsMemory(0, encodedLength), cancellationToken);
+					packetsSent++;
+				}
+				finally
+				{
+					frame.Dispose();
+				}
+
+				if (start.Elapsed >= nextDiagnosticAt)
+				{
+					JsonLog.Write("diagnostic", "Publisher audio statistics.", new Dictionary<string, object?>
+					{
+						["packets_sent"] = packetsSent,
+						["opus_frame_ms"] = opusFrameMilliseconds,
+						["capture_queue_drops"] = frames.DroppedFrames,
+						["udp_max_send_ms"] = session.TakeMaxUdpSendMilliseconds(),
+					});
+					nextDiagnosticAt += TimeSpan.FromSeconds(5);
+				}
 			}
+		}
+		finally
+		{
+			(encoder as IDisposable)?.Dispose();
 		}
 	}
 
@@ -143,7 +177,7 @@ internal static class AudioPublisher
 
 	private static int EncodePacket(
 		IOpusEncoder encoder,
-		short[] pcm,
+		ReadOnlySpan<short> pcm,
 		int frameSamplesPerChannel,
 		byte[] packetBuffer)
 	{
@@ -152,7 +186,7 @@ internal static class AudioPublisher
 			throw new InvalidOperationException($"PCM frame length {pcm.Length} does not match Opus frame size {frameSamplesPerChannel * Channels}.");
 		}
 
-		var encodedLength = encoder.Encode(pcm.AsSpan(), frameSamplesPerChannel, packetBuffer.AsSpan(), packetBuffer.Length);
+		var encodedLength = encoder.Encode(pcm, frameSamplesPerChannel, packetBuffer.AsSpan(), packetBuffer.Length);
 		if (encodedLength <= 0)
 		{
 			throw new InvalidOperationException($"Opus encode failed with code {encodedLength}.");

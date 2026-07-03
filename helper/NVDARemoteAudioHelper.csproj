@@ -8,10 +8,13 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>NVDARemoteAudioHelper</AssemblyName>
     <RootNamespace>NVDARemoteAudioHelper</RootNamespace>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Concentus" Version="2.2.2" />
+    <PackageReference Include="Concentus.Native" Version="1.5.2" />
+    <PackageReference Include="Concentus.Native.NetCore" Version="1.5.2" />
     <PackageReference Include="NAudio" Version="2.3.0" />
   </ItemGroup>
 

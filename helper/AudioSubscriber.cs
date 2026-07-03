@@ -39,63 +39,74 @@ internal static class AudioSubscriber
 			["opus_frame_ms"] = opusFrameMilliseconds,
 		});
 
-		while (!cancellationToken.IsCancellationRequested)
+		try
 		{
-			var frame = await session.ReceiveAudioAsync(cancellationToken);
-			if (lastSequence != ulong.MaxValue && frame.Sequence <= lastSequence)
+			while (!cancellationToken.IsCancellationRequested)
 			{
-				duplicateOrLatePackets++;
-				continue;
-			}
-
-			packetsReceived++;
-			if (lastSequence != ulong.MaxValue && frame.Sequence > lastSequence + 1)
-			{
-				var gap = frame.Sequence - lastSequence - 1;
-				if (gap == 1 && TryDecodeFec(decoder, frame.Payload.AsSpan(), decoded, lastSamplesPerChannel, playback))
+				var frame = await session.ReceiveAudioAsync(cancellationToken);
+				if (lastSequence != ulong.MaxValue && frame.Sequence <= lastSequence)
 				{
-					fecRecoveries++;
+					duplicateOrLatePackets++;
+					continue;
 				}
-				else
+
+				packetsReceived++;
+				if (lastSequence != ulong.MaxValue && frame.Sequence > lastSequence + 1)
 				{
-					unrecoveredGaps += gap;
-					var missingPackets = Math.Min(gap, 5UL);
-					for (var i = 0UL; i < missingPackets; i++)
+					var gap = frame.Sequence - lastSequence - 1;
+					if (gap == 1 && TryDecodeFec(decoder, frame.Payload.AsSpan(), decoded, lastSamplesPerChannel, playback))
 					{
-						if (TryDecodePacketLossConcealment(decoder, decoded, lastSamplesPerChannel, playback))
+						fecRecoveries++;
+					}
+					else
+					{
+						unrecoveredGaps += gap;
+						var missingPackets = Math.Min(gap, 5UL);
+						for (var i = 0UL; i < missingPackets; i++)
 						{
-							plcFrames++;
+							if (TryDecodePacketLossConcealment(decoder, decoded, lastSamplesPerChannel, playback))
+							{
+								plcFrames++;
+							}
 						}
 					}
 				}
-			}
 
-			lastSequence = frame.Sequence;
-			var samplesPerChannel = decoder.Decode(frame.Payload.AsSpan(), decoded.AsSpan(), MaxDecodedSamplesPerChannel, false);
-			if (samplesPerChannel > 0)
-			{
-				lastSamplesPerChannel = samplesPerChannel;
-				playback.AddSamples(decoded.AsSpan(0, samplesPerChannel * Channels));
-			}
-
-			if (start.Elapsed >= nextDiagnosticAt)
-			{
-				JsonLog.Write("diagnostic", "Subscriber audio statistics.", new Dictionary<string, object?>
+				lastSequence = frame.Sequence;
+				var samplesPerChannel = decoder.Decode(frame.Payload.AsSpan(), decoded.AsSpan(), MaxDecodedSamplesPerChannel, false);
+				if (samplesPerChannel > 0)
 				{
-					["packets_received"] = packetsReceived,
-					["duplicate_or_late_packets"] = duplicateOrLatePackets,
-					["fec_recoveries"] = fecRecoveries,
-					["plc_frames"] = plcFrames,
-					["unrecovered_gaps"] = unrecoveredGaps,
-					["buffer_ms"] = playback.CurrentBufferMs,
-					["underruns"] = playback.Underruns,
-					["drops"] = playback.Drops,
-					["trim_drops"] = playback.TrimDrops,
-					["drift_drops"] = playback.DriftDrops,
-					["drift_repeats"] = playback.DriftRepeats,
-				});
-				nextDiagnosticAt += TimeSpan.FromSeconds(5);
+					lastSamplesPerChannel = samplesPerChannel;
+					playback.AddSamples(decoded.AsSpan(0, samplesPerChannel * Channels));
+				}
+
+				if (start.Elapsed >= nextDiagnosticAt)
+				{
+					JsonLog.Write("diagnostic", "Subscriber audio statistics.", new Dictionary<string, object?>
+					{
+						["packets_received"] = packetsReceived,
+						["duplicate_or_late_packets"] = duplicateOrLatePackets,
+						["fec_recoveries"] = fecRecoveries,
+						["plc_frames"] = plcFrames,
+						["unrecovered_gaps"] = unrecoveredGaps,
+						["buffer_ms"] = playback.CurrentBufferMs,
+						["underruns"] = playback.Underruns,
+						["partial_reads"] = playback.PartialReads,
+						["drops"] = playback.Drops,
+						["trim_drops"] = playback.TrimDrops,
+						["drift_drops"] = playback.DriftDrops,
+						["drift_repeats"] = playback.DriftRepeats,
+						["drift_resampler_ratio"] = playback.DriftResamplerRatio,
+						["drift_resampler_updates"] = playback.DriftResamplerUpdates,
+						["udp_max_receive_gap_ms"] = session.TakeMaxReceiveGapMilliseconds(),
+					});
+					nextDiagnosticAt += TimeSpan.FromSeconds(5);
+				}
 			}
+		}
+		finally
+		{
+			(decoder as IDisposable)?.Dispose();
 		}
 	}
 

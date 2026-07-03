@@ -27,6 +27,12 @@ addon/globalPlugins/**/__pycache__/
 # OS / IDE
 .vs/
 .vscode/
+.idea/
 *.user
+*.suo
+*.log
+*.tmp
+*.tmp.*
+*.swp
 Thumbs.db
 .DS_Store

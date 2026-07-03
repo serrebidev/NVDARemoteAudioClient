@@ -68,7 +68,9 @@ Packet size and subscriber-side jitter buffering are tunable from CLI (the add-o
 | `AudioPublisher.cs` | Opus encode loop, configurable 5/10/20 ms packets, test-tone generator. |
 | `ProcessLoopbackCapture.cs` | `ActivateAudioInterfaceAsync` against `VAD\Process_Loopback`, `IAudioClient`/`IAudioCaptureClient` interop, exclude-PID wiring. |
 | `AudioSubscriber.cs` | Opus decode, in-band FEC recovery, PLC, diagnostic counters. |
-| `PlaybackSink.cs` | WASAPI event-sync output, float ring buffer, prebuffer, underrun fade, trim, drift correction. |
+| `PlaybackSink.cs` | WASAPI event-sync output, float ring buffer, prebuffer, underrun fade, trim, and continuous drift resampling. |
+| `NetworkPriority.cs` | Best-effort qWAVE voice-priority attachment for the UDP socket. |
+| `SystemTimerResolution.cs` | Holds a fine Windows timer resolution while the helper is active. |
 | `AudioRingBuffer.cs` | Lock-free single-producer/single-consumer audio ring buffer. |
 | `WindowsAudioThreadBoost.cs` | MMCSS / thread-priority helper for synchronous audio paths. |
 | `JsonLog.cs` | One-line-JSON status events written to stdout. |

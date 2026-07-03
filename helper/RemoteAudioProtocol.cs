@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -33,6 +34,11 @@ internal sealed class RemoteAudioSession : IAsyncDisposable
 	private readonly Task _udpHeartbeatTask;
 	private readonly SemaphoreSlim _udpSendLock = new(1, 1);
 	private readonly byte[] _sessionId;
+	private readonly NetworkPriority _networkPriority;
+	private readonly byte[] _audioPacketBuffer;
+	private long _maxUdpSendTicks;
+	private long _lastReceiveTicks;
+	private long _maxReceiveGapTicks;
 
 	public int MaxPayloadBytes { get; }
 	public ConnectionRole Role { get; }
@@ -46,6 +52,7 @@ internal sealed class RemoteAudioSession : IAsyncDisposable
 		int maxPayloadBytes,
 		int tcpHeartbeatIntervalMs,
 		int udpSessionTimeoutMs,
+		NetworkPriority networkPriority,
 		ConnectionRole role,
 		CancellationToken externalToken)
 	{
@@ -53,6 +60,8 @@ internal sealed class RemoteAudioSession : IAsyncDisposable
 		_writer = writer;
 		_udp = udp;
 		_sessionId = sessionId;
+		_networkPriority = networkPriority;
+		_audioPacketBuffer = new byte[UdpPacket.AudioHeaderLength + maxPayloadBytes];
 		MaxPayloadBytes = maxPayloadBytes;
 		Role = role;
 		SessionIdHex = Convert.ToHexString(sessionId).ToLowerInvariant();
@@ -110,8 +119,10 @@ internal sealed class RemoteAudioSession : IAsyncDisposable
 		udp.Client.SendBufferSize = 256 * 1024;
 		udp.Client.ReceiveBufferSize = 512 * 1024;
 		udp.Connect(host, udpPort);
+		var networkPriority = new NetworkPriority();
+		networkPriority.Attach(udp.Client, message => JsonLog.Write("diagnostic", message));
 
-		var session = new RemoteAudioSession(tcp, writer, udp, sessionId, maxPayload, tcpHeartbeatMs, udpTimeoutMs, role, cancellationToken);
+		var session = new RemoteAudioSession(tcp, writer, udp, sessionId, maxPayload, tcpHeartbeatMs, udpTimeoutMs, networkPriority, role, cancellationToken);
 		await session.RegisterUdpAsync(cancellationToken);
 
 		JsonLog.Write("connected", $"Connected as {roleText}.", new Dictionary<string, object?>
@@ -132,8 +143,18 @@ internal sealed class RemoteAudioSession : IAsyncDisposable
 			throw new InvalidOperationException($"Encoded Opus frame is {payload.Length} bytes, above server limit {MaxPayloadBytes}.");
 		}
 
-		var packet = UdpPacket.CreateAudio(_sessionId, sequence, timestampMs, payload.Span);
-		await SendUdpAsync(packet, cancellationToken);
+		await _udpSendLock.WaitAsync(cancellationToken);
+		try
+		{
+			var packetLength = UdpPacket.WriteAudio(_audioPacketBuffer, _sessionId, sequence, timestampMs, payload.Span);
+			var start = Stopwatch.GetTimestamp();
+			await _udp.Client.SendAsync(_audioPacketBuffer.AsMemory(0, packetLength), SocketFlags.None, cancellationToken);
+			RecordMaxTicks(ref _maxUdpSendTicks, Stopwatch.GetTimestamp() - start);
+		}
+		finally
+		{
+			_udpSendLock.Release();
+		}
 	}
 
 	public async Task<UdpAudioFrame> ReceiveAudioAsync(CancellationToken cancellationToken)
@@ -148,13 +169,25 @@ internal sealed class RemoteAudioSession : IAsyncDisposable
 				continue;
 			}
 
+			var now = Stopwatch.GetTimestamp();
+			var previous = Interlocked.Exchange(ref _lastReceiveTicks, now);
+			if (previous != 0)
+			{
+				RecordMaxTicks(ref _maxReceiveGapTicks, now - previous);
+			}
+
 			return new UdpAudioFrame(parsed.Sequence, parsed.TimestampMs, parsed.Payload);
 		}
 	}
 
+	public double TakeMaxUdpSendMilliseconds() => TicksToMilliseconds(Interlocked.Exchange(ref _maxUdpSendTicks, 0));
+
+	public double TakeMaxReceiveGapMilliseconds() => TicksToMilliseconds(Interlocked.Exchange(ref _maxReceiveGapTicks, 0));
+
 	public async ValueTask DisposeAsync()
 	{
 		_lifetimeCts.Cancel();
+		_networkPriority.Dispose();
 		_tcp.Close();
 		_udp.Close();
 
@@ -276,11 +309,33 @@ internal sealed class RemoteAudioSession : IAsyncDisposable
 		await _udpSendLock.WaitAsync(cancellationToken);
 		try
 		{
+			var start = Stopwatch.GetTimestamp();
 			await _udp.SendAsync(packet, cancellationToken);
+			RecordMaxTicks(ref _maxUdpSendTicks, Stopwatch.GetTimestamp() - start);
 		}
 		finally
 		{
 			_udpSendLock.Release();
+		}
+	}
+
+	private static double TicksToMilliseconds(long ticks) =>
+		ticks <= 0 ? 0 : ticks * 1000.0 / Stopwatch.Frequency;
+
+	private static void RecordMaxTicks(ref long target, long value)
+	{
+		while (true)
+		{
+			var current = Volatile.Read(ref target);
+			if (value <= current)
+			{
+				return;
+			}
+
+			if (Interlocked.CompareExchange(ref target, value, current) == current)
+			{
+				return;
+			}
 		}
 	}
 
@@ -387,7 +442,7 @@ internal static class UdpPacket
 {
 	private static readonly byte[] Magic = "RAS1"u8.ToArray();
 	private const int HeaderLength = 22;
-	private const int AudioHeaderLength = HeaderLength + 16;
+	public const int AudioHeaderLength = HeaderLength + 16;
 
 	public static byte[] CreateControl(UdpPacketKind kind, ReadOnlySpan<byte> sessionId)
 	{
@@ -399,11 +454,22 @@ internal static class UdpPacket
 	public static byte[] CreateAudio(ReadOnlySpan<byte> sessionId, ulong sequence, ulong timestampMs, ReadOnlySpan<byte> payload)
 	{
 		var packet = new byte[AudioHeaderLength + payload.Length];
-		WriteHeader(packet, UdpPacketKind.AudioData, sessionId);
-		BinaryPrimitives.WriteUInt64BigEndian(packet.AsSpan(HeaderLength, 8), sequence);
-		BinaryPrimitives.WriteUInt64BigEndian(packet.AsSpan(HeaderLength + 8, 8), timestampMs);
-		payload.CopyTo(packet.AsSpan(AudioHeaderLength));
+		WriteAudio(packet, sessionId, sequence, timestampMs, payload);
 		return packet;
+	}
+
+	public static int WriteAudio(Span<byte> packet, ReadOnlySpan<byte> sessionId, ulong sequence, ulong timestampMs, ReadOnlySpan<byte> payload)
+	{
+		if (packet.Length < AudioHeaderLength + payload.Length)
+		{
+			throw new ArgumentException("Audio packet destination is too small.", nameof(packet));
+		}
+
+		WriteHeader(packet, UdpPacketKind.AudioData, sessionId);
+		BinaryPrimitives.WriteUInt64BigEndian(packet.Slice(HeaderLength, 8), sequence);
+		BinaryPrimitives.WriteUInt64BigEndian(packet.Slice(HeaderLength + 8, 8), timestampMs);
+		payload.CopyTo(packet[AudioHeaderLength..]);
+		return AudioHeaderLength + payload.Length;
 	}
 
 	public static bool TryParse(byte[] packet, out ParsedUdpPacket parsed)

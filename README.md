@@ -14,11 +14,11 @@ The add-on is just a launcher and a settings UI. The helper does the audio work 
 
 1. On **both** machines, download `remoteAudioClient-<version>.nvda-addon` from [Releases](https://github.com/serrebidev/NVDARemoteAudioClient/releases) and open it. NVDA installs it.
 2. Restart NVDA.
-3. On the machine that will **send** audio: open `NVDA menu > Tools > NVDA Remote Audio > Install audio server (this machine sends audio)...`. The add-on downloads [NVDARemoteAudioServer](https://github.com/haitun001/NVDARemoteAudioServer) from GitHub, installs it under `C:\NVDARemoteAudioServer\` (or `%LOCALAPPDATA%\NVDARemoteAudioServer\` if the first isn't writable), starts it, registers a per-user Startup shortcut so it auto-starts at sign-in, and prompts for UAC to add Windows Firewall inbound allow rules for TCP+UDP 6838. Decline UAC and the rest still installs; pick `Add firewall rules for audio server...` later if you want to retry.
+3. On the machine that will **send** audio: open `NVDA menu > Tools > NVDA Remote Audio > Install audio server (this machine sends audio)...`. The add-on downloads [NVDARemoteAudioServer](https://github.com/haitun001/NVDARemoteAudioServer) from GitHub, installs it under `C:\NVDARemoteAudioServer\` (or `%LOCALAPPDATA%\NVDARemoteAudioServer\` if the first isn't writable), starts it, registers a per-user Run startup entry so it auto-starts at sign-in, and prompts for UAC to add Windows Firewall inbound allow rules for TCP+UDP 6838. Decline UAC and the rest still installs; pick `Add firewall rules for audio server...` later if you want to retry.
 4. On **both** machines, open `NVDA menu > Preferences > Settings > NVDA Remote Audio` and set:
    - **Server host** — IP/hostname of the machine running the server.
    - **Audio port** — 6838 (default).
-   - **Key** — same string on both sides. **Required, no default.**
+   - **Session key / room name** — same string on both sides. **Required, no default. This is not an encryption password.**
 5. Restart NVDA, or pick `Receive remote audio` (client) / `Send this computer's audio` (server) from the Tools menu. Picking `Send` on a machine without the server installed offers to install it on the spot.
 
 The add-on does not change anything in NVDA Remote. Use NVDA Remote on its usual port (6837) the same way you always have.
@@ -47,7 +47,7 @@ Override with `Settings > NVDA Remote Audio > Latency profile`.
 
 ## NVDA controls
 
-The Tools menu exposes receive, send, reconnect, disconnect, status, server install, firewall, and settings actions. The same receive/send/disconnect/reconnect/status actions are also available as unbound NVDA Input Gestures under the `NVDA Remote Audio` category. While you are controlling another machine with NVDA Remote, those gestures stay local instead of being forwarded as keystrokes.
+The Tools menu exposes receive, send, reconnect, disconnect, status, copy diagnostics, server install, server update/repair, firewall, server remove/disable, and settings actions. The same receive/send/disconnect/reconnect/status/diagnostics actions are also available as unbound NVDA Input Gestures under the `NVDA Remote Audio` category. While you are controlling another machine with NVDA Remote, those gestures stay local instead of being forwarded as keystrokes.
 
 Routine connection status messages can be muted in settings for quieter sessions. Errors and explicit status commands still speak. Opus packet-loss recovery is enabled by default and can be disabled from settings for advanced LAN testing. Verbose diagnostic logging can also be enabled when you need helper timing details in `nvda.log`.
 
@@ -63,11 +63,11 @@ You need the .NET 9 SDK. From an elevated-or-not PowerShell at the repo root:
 .\build.ps1
 ```
 
-That publishes the helper, stages it into `addon/bin/`, and produces `remoteAudioClient-<version>.nvda-addon` at the repo root. See [`helper/README.md`](helper/README.md) and [`addon/README.md`](addon/README.md) for details.
+That publishes the helper, stages a clean add-on package, validates the archive, and produces `dist/remoteAudioClient-<version>.nvda-addon`. See [`helper/README.md`](helper/README.md) and [`addon/README.md`](addon/README.md) for details.
 
 ## Security
 
-Audio is sent **unencrypted over UDP**. Don't use this on the open internet without a VPN or Tailscale. The server's "key" is a shared identifier, not a secret — anyone who can reach port 6838 with the right key can join the channel.
+Audio is sent **unencrypted over UDP**. Don't use this on the open internet without a VPN or Tailscale. The session key is a shared room identifier, not a secret password; anyone who can reach port 6838 with the right key can join the channel.
 
 ## License
 

@@ -27,7 +27,7 @@ NVDA add-on side of [NVDA Remote Audio Client](../README.md). Spawns and supervi
 }
 ```
 
-- `key` is required. The plugin refuses to start if it's blank.
+- `key` is the session key / room name. It is required and must match on both sides, but it is not an encryption password.
 - `startupMode`: `auto` | `disabled` | `subscriber` | `publisher`. `auto` picks `publisher` if `C:\NVDARemoteAudioServer\NVDARemoteAudioServer.exe` or `%LOCALAPPDATA%\NVDARemoteAudioServer\NVDARemoteAudioServer.exe` exists on the machine, else `subscriber`.
 - `latencyProfile`: `auto` | `lan` | `tailscale` | `internet`. `auto` picks based on the `host` value (private IP → LAN, 100.64.0.0/10 or `*.ts.net` → Tailscale, else Internet).
 
@@ -35,7 +35,7 @@ NVDA add-on side of [NVDA Remote Audio Client](../README.md). Spawns and supervi
 - `useFec`: when true, the helper enables Opus in-band packet-loss recovery. Turning it off appends `--disable-fec` for advanced low-overhead LAN testing.
 - `verboseLogging`: when true, helper diagnostic lines are written to `nvda.log`. Errors and non-diagnostic lifecycle events are still logged when this is false.
 
-The add-on also exposes unbound NVDA Input Gestures under the `NVDA Remote Audio` category: receive, send, disconnect, reconnect, and report status. Those gestures are registered with NVDA Remote's local-script list so they still run on the machine where you press them while you are controlling another machine with F11.
+The add-on also exposes unbound NVDA Input Gestures under the `NVDA Remote Audio` category: receive, send, disconnect, reconnect, report status, and copy diagnostics. Those gestures are registered with NVDA Remote's local-script list so they still run on the machine where you press them while you are controlling another machine with F11.
 
 ## How the auto-retry works
 
@@ -63,7 +63,7 @@ From the repo root:
 .\build.ps1
 ```
 
-Or by hand: publish the helper, copy it into `addon/bin/`, then zip the contents of `addon/` into `remoteAudioClient-<version>.nvda-addon`. The zip's root must contain `manifest.ini`, not a wrapping folder.
+Or by hand: publish the helper, stage only `manifest.ini`, `readme.html`, `globalPlugins/`, and `bin/NVDARemoteAudioHelper.exe`, then zip the staged contents into `remoteAudioClient-<version>.nvda-addon`. The zip's root must contain `manifest.ini`, not a wrapping folder.
 
 ## Install for development
 

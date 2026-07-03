@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using NAudio.Dsp;
 using NAudio.Wave;
 
 namespace NVDARemoteAudioHelper;
@@ -50,6 +51,9 @@ internal sealed class PlaybackSink : IDisposable
 	public long TrimDrops => _provider.TrimDrops;
 	public long DriftDrops => _provider.DriftDrops;
 	public long DriftRepeats => _provider.DriftRepeats;
+	public long PartialReads => _provider.PartialReads;
+	public double DriftResamplerRatio => _provider.DriftResamplerRatio;
+	public long DriftResamplerUpdates => _provider.DriftResamplerUpdates;
 
 	public void AddSamples(ReadOnlySpan<float> samples)
 	{
@@ -73,12 +77,16 @@ internal sealed class PlaybackSink : IDisposable
 
 	private sealed class LowLatencyFloatProvider : IWaveProvider
 	{
-		private const double DriftGain = 0.005;
-		private const double DriftSmallErrorFrames = 50;
-		private const double DriftMaxGainScale = 20.0;
-		private const int DriftCrossfadeFrames = 8;
 		private const int ConcealFadeFrames = 48;
 		private const int MaxConsecutiveConcealmentReads = 8;
+		private const double DriftMeasurementWindowSec = 10.0;
+		private const double DriftFirstWindowSec = 10.0;
+		private const double DriftRatioSmoothingNew = 0.30;
+		private const double DriftRatioMin = 0.95;
+		private const double DriftRatioMax = 1.05;
+		private const double DriftFilterTimeConstantSec = 2.0;
+		private const double DepthCorrectionSec = 15.0;
+		private const double MaxDepthBias = 0.003;
 
 		[ThreadStatic]
 		private static WindowsAudioThreadBoost? renderThreadBoost;
@@ -88,20 +96,28 @@ internal sealed class PlaybackSink : IDisposable
 		private readonly int _bytesPerFrame;
 		private readonly int _bytesPerSecond;
 		private readonly AudioRingBuffer _ring;
-		private float[] _scratch = new float[8192];
+		private readonly WdlResampler _driftResampler;
 		private volatile bool _armed;
 		private volatile int _largestWriteMs;
-		private double _driftAccumulatorFrames;
-		private long _previousDriftTicks;
-		private int _pendingDropFrames;
-		private int _pendingRepeatFrames;
 		private bool _inConcealment;
 		private int _consecutiveEmptyReads;
 		private float _lastSampleL;
 		private float _lastSampleR;
 		private long _trimDrops;
-		private long _driftDrops;
-		private long _driftRepeats;
+		private long _partialReads;
+		private long _bytesWrittenForDriftEst;
+		private long _bytesReadOutputForDriftEst;
+		private long _resamplerWindowStartTicks;
+		private long _resamplerWindowStartBytesWritten;
+		private long _resamplerWindowStartBytesOutput;
+		private double _smoothedRateRatio = 1.0;
+		private bool _resamplerActivelyTracking;
+		private long _driftResamplerUpdates;
+		private double _filteredErrorFrames;
+		private long _prevDriftSampleTicks;
+		private float[] _resamplerInputScratch = new float[2048];
+		private float[] _resamplerOutputScratch = new float[2048];
+		private int _lastInputFramesAvailable;
 
 		public LowLatencyFloatProvider(int sampleRate, int channels, int targetLatencyMs, int capacityMs)
 		{
@@ -112,6 +128,10 @@ internal sealed class PlaybackSink : IDisposable
 			_bytesPerFrame = channels * sizeof(float);
 			_bytesPerSecond = sampleRate * _bytesPerFrame;
 			_ring = new AudioRingBuffer(MillisecondsToBytes(capacityMs));
+			_driftResampler = new WdlResampler();
+			_driftResampler.SetMode(interp: true, filtercnt: 0, sinc: false);
+			_driftResampler.SetFeedMode(false);
+			_driftResampler.SetRates(sampleRate, sampleRate);
 		}
 
 		public WaveFormat WaveFormat { get; }
@@ -120,8 +140,11 @@ internal sealed class PlaybackSink : IDisposable
 		public long Underruns => _ring.Underruns;
 		public long Drops => _ring.Drops;
 		public long TrimDrops => Interlocked.Read(ref _trimDrops);
-		public long DriftDrops => Interlocked.Read(ref _driftDrops);
-		public long DriftRepeats => Interlocked.Read(ref _driftRepeats);
+		public long DriftDrops => 0;
+		public long DriftRepeats => 0;
+		public long PartialReads => Interlocked.Read(ref _partialReads);
+		public double DriftResamplerRatio => _smoothedRateRatio;
+		public long DriftResamplerUpdates => Interlocked.Read(ref _driftResamplerUpdates);
 
 		public bool AddSamples(ReadOnlySpan<float> samples)
 		{
@@ -132,6 +155,7 @@ internal sealed class PlaybackSink : IDisposable
 
 			var bytes = MemoryMarshal.AsBytes(samples);
 			_ring.Write(bytes);
+			Interlocked.Add(ref _bytesWrittenForDriftEst, bytes.Length);
 			var writeMs = bytes.Length * 1000 / _bytesPerSecond;
 			if (writeMs > _largestWriteMs)
 			{
@@ -171,50 +195,10 @@ internal sealed class PlaybackSink : IDisposable
 			}
 
 			TrimBacklogIfNeeded();
-			UpdateDrift(outFrames);
-
-			var dropThisCall = _pendingDropFrames > 0 && outFrames > DriftCrossfadeFrames * 2 ? 1 : 0;
-			var repeatThisCall = _pendingRepeatFrames > 0 && outFrames > DriftCrossfadeFrames * 2 ? 1 : 0;
-			if (dropThisCall > 0 && repeatThisCall > 0)
-			{
-				dropThisCall = 0;
-				repeatThisCall = 0;
-			}
-
-			if (dropThisCall > 0)
-			{
-				var extraFloats = (outFrames + 1) * _channels;
-				var scratch = Scratch(extraFloats);
-				ReadInputWithConcealment(scratch);
-				ApplyDropCrossfade(scratch, output, outFrames);
-				_pendingDropFrames--;
-				Interlocked.Increment(ref _driftDrops);
-			}
-			else if (repeatThisCall > 0)
-			{
-				var shortFloats = (outFrames - 1) * _channels;
-				var scratch = Scratch(shortFloats);
-				ReadInputWithConcealment(scratch);
-				ApplyRepeatCrossfade(scratch, output, outFrames);
-				_pendingRepeatFrames--;
-				Interlocked.Increment(ref _driftRepeats);
-			}
-			else
-			{
-				ReadInputWithConcealment(output);
-			}
+			UpdateDriftResamplerRateIfDue(outFrames);
+			ReadThroughResampler(output, outFrames);
 
 			return count;
-		}
-
-		private Span<float> Scratch(int length)
-		{
-			if (_scratch.Length < length)
-			{
-				_scratch = new float[length];
-			}
-
-			return _scratch.AsSpan(0, length);
 		}
 
 		private void TrimBacklogIfNeeded()
@@ -239,66 +223,141 @@ internal sealed class PlaybackSink : IDisposable
 			Interlocked.Add(ref _trimDrops, dropBytes);
 		}
 
-		private void UpdateDrift(int outFrames)
+		private void UpdateDriftResamplerRateIfDue(int outFrames)
 		{
-			var now = System.Diagnostics.Stopwatch.GetTimestamp();
-			if (_previousDriftTicks != 0)
+			var nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+			var driftTargetBytes = MillisecondsToBytes(TargetLatencyMs);
+			if (_prevDriftSampleTicks != 0)
 			{
-				var dtSec = (now - _previousDriftTicks) / (double)System.Diagnostics.Stopwatch.Frequency;
-				var errorFrames = ((double)_ring.BufferedBytes - MillisecondsToBytes(TargetLatencyMs)) / _bytesPerFrame;
-				var absErrorFrames = Math.Abs(errorFrames);
-				var gainScale = absErrorFrames <= DriftSmallErrorFrames
-					? 1.0
-					: Math.Min(absErrorFrames / DriftSmallErrorFrames, DriftMaxGainScale);
-				_driftAccumulatorFrames += errorFrames * dtSec * DriftGain * gainScale;
-				_driftAccumulatorFrames = Math.Clamp(_driftAccumulatorFrames, -100.0, 100.0);
+				var dtSec = (nowTicks - _prevDriftSampleTicks) / (double)System.Diagnostics.Stopwatch.Frequency;
+				var errorFrames = ((double)_ring.BufferedBytes - driftTargetBytes) / _bytesPerFrame;
+				var alpha = dtSec / (DriftFilterTimeConstantSec + dtSec);
+				_filteredErrorFrames = (1.0 - alpha) * _filteredErrorFrames + alpha * errorFrames;
 			}
 
-			_previousDriftTicks = now;
-			if (_driftAccumulatorFrames >= 1.0)
+			_prevDriftSampleTicks = nowTicks;
+			if (_resamplerWindowStartTicks == 0)
 			{
-				_pendingDropFrames++;
-				_driftAccumulatorFrames -= 1.0;
+				_resamplerWindowStartTicks = nowTicks;
+				_resamplerWindowStartBytesWritten = Interlocked.Read(ref _bytesWrittenForDriftEst);
+				_resamplerWindowStartBytesOutput = Interlocked.Read(ref _bytesReadOutputForDriftEst);
+				return;
 			}
-			else if (_driftAccumulatorFrames <= -1.0 && outFrames > 1)
+
+			var windowDuration = _resamplerActivelyTracking ? DriftMeasurementWindowSec : DriftFirstWindowSec;
+			var elapsedSec = (nowTicks - _resamplerWindowStartTicks) / (double)System.Diagnostics.Stopwatch.Frequency;
+			if (elapsedSec < windowDuration)
 			{
-				_pendingRepeatFrames++;
-				_driftAccumulatorFrames += 1.0;
+				return;
 			}
+
+			var bytesWrittenNow = Interlocked.Read(ref _bytesWrittenForDriftEst);
+			var bytesOutputNow = Interlocked.Read(ref _bytesReadOutputForDriftEst);
+			var bytesWrittenInWindow = bytesWrittenNow - _resamplerWindowStartBytesWritten;
+			var bytesOutputInWindow = bytesOutputNow - _resamplerWindowStartBytesOutput;
+
+			if (bytesOutputInWindow > 0 && bytesWrittenInWindow > 0)
+			{
+				var measuredRatio = (double)bytesWrittenInWindow / bytesOutputInWindow;
+				if (measuredRatio >= DriftRatioMin && measuredRatio <= DriftRatioMax)
+				{
+					_smoothedRateRatio = _resamplerActivelyTracking
+						? (1.0 - DriftRatioSmoothingNew) * _smoothedRateRatio + DriftRatioSmoothingNew * measuredRatio
+						: measuredRatio;
+					_resamplerActivelyTracking = true;
+				}
+			}
+
+			if (_resamplerActivelyTracking)
+			{
+				var depthFrames = _ring.BufferedBytes / _bytesPerFrame;
+				var targetFrames = TargetLatencyMs * _sampleRate / 1000;
+				var depthError = depthFrames - targetFrames;
+				var depthCorrection = Math.Clamp(depthError / (DepthCorrectionSec * _sampleRate), -MaxDepthBias, MaxDepthBias);
+				_driftResampler.SetRates(_sampleRate * (_smoothedRateRatio + depthCorrection), _sampleRate);
+				Interlocked.Increment(ref _driftResamplerUpdates);
+			}
+
+			_resamplerWindowStartTicks = nowTicks;
+			_resamplerWindowStartBytesWritten = bytesWrittenNow;
+			_resamplerWindowStartBytesOutput = bytesOutputNow;
 		}
 
-		private void ReadInputWithConcealment(Span<float> output)
+		private void ReadThroughResampler(Span<float> output, int outFrames)
 		{
-			var requestedFrames = output.Length / _channels;
-			var floatsRead = _ring.ReadFloats(output);
-			var framesRead = floatsRead / _channels;
-
-			if (framesRead < requestedFrames)
+			var outFloats = outFrames * _channels;
+			var inputFramesNeeded = _driftResampler.ResamplePrepare(outFrames, _channels, out var inputBuffer, out var inputOffset);
+			_lastInputFramesAvailable = inputFramesNeeded;
+			if (inputFramesNeeded <= 0)
 			{
-				_consecutiveEmptyReads = framesRead == 0 ? _consecutiveEmptyReads + 1 : 0;
+				ResampleOutAndCopy(output, outFrames);
+				Interlocked.Add(ref _bytesReadOutputForDriftEst, outFloats * sizeof(float));
+				return;
+			}
+
+			var inputFloatsNeeded = inputFramesNeeded * _channels;
+			if (_resamplerInputScratch.Length < inputFloatsNeeded)
+			{
+				_resamplerInputScratch = new float[inputFloatsNeeded];
+			}
+
+			var bytesGot = _ring.Read(MemoryMarshal.AsBytes(_resamplerInputScratch.AsSpan(0, inputFloatsNeeded)));
+			var floatsGot = bytesGot / sizeof(float);
+			var framesGot = floatsGot / _channels;
+
+			_resamplerInputScratch.AsSpan(0, inputFloatsNeeded).CopyTo(inputBuffer.AsSpan(inputOffset, inputFloatsNeeded));
+			ResampleOutAndCopy(output, outFrames);
+			Interlocked.Add(ref _bytesReadOutputForDriftEst, outFloats * sizeof(float));
+
+			if (framesGot == 0)
+			{
+				_consecutiveEmptyReads++;
 				if (_consecutiveEmptyReads <= MaxConsecutiveConcealmentReads)
 				{
-					ApplyFadeOut(output, framesRead, requestedFrames - framesRead);
+					ApplyFadeOut(output, 0, outFrames);
 				}
 
 				_inConcealment = true;
 			}
-			else if (_inConcealment)
-			{
-				ApplyFadeIn(output, requestedFrames);
-				_inConcealment = false;
-				_consecutiveEmptyReads = 0;
-			}
 			else
 			{
+				if (framesGot < inputFramesNeeded)
+				{
+					Interlocked.Increment(ref _partialReads);
+				}
+
 				_consecutiveEmptyReads = 0;
+				if (_inConcealment)
+				{
+					ApplyFadeIn(output, outFrames);
+					_inConcealment = false;
+				}
+
+				var lastIdx = (floatsGot - _channels);
+				_lastSampleL = _resamplerInputScratch[lastIdx];
+				_lastSampleR = _channels > 1 ? _resamplerInputScratch[lastIdx + 1] : _resamplerInputScratch[lastIdx];
+			}
+		}
+
+		private void ResampleOutAndCopy(Span<float> output, int outFrames)
+		{
+			var outFloats = outFrames * _channels;
+			if (_resamplerOutputScratch.Length < outFloats)
+			{
+				_resamplerOutputScratch = new float[outFloats];
 			}
 
-			if (framesRead > 0)
+			var producedFrames = _driftResampler.ResampleOut(_resamplerOutputScratch, 0, _lastInputFramesAvailable, outFrames, _channels);
+			var producedFloats = producedFrames * _channels;
+			for (var i = 0; i < producedFloats; i++)
 			{
-				var lastIdx = (framesRead - 1) * _channels;
-				_lastSampleL = output[lastIdx];
-				_lastSampleR = _channels > 1 ? output[lastIdx + 1] : output[lastIdx];
+				var sample = _resamplerOutputScratch[i];
+				output[i] = float.IsNaN(sample) ? 0f : Math.Clamp(sample, -1f, 1f);
+			}
+
+			if (producedFloats < outFloats)
+			{
+				output[producedFloats..outFloats].Clear();
 			}
 		}
 
@@ -331,76 +390,6 @@ internal sealed class PlaybackSink : IDisposable
 				{
 					output[idx + 1] *= gain;
 				}
-			}
-		}
-
-		private void ApplyDropCrossfade(ReadOnlySpan<float> input, Span<float> output, int outFrames)
-		{
-			var spliceIdx = outFrames / 2;
-			var halfWindow = DriftCrossfadeFrames / 2;
-			var preEnd = spliceIdx - halfWindow;
-			if (preEnd > 0)
-			{
-				input[..(preEnd * _channels)].CopyTo(output);
-			}
-
-			for (var frame = 0; frame < DriftCrossfadeFrames; frame++)
-			{
-				var t = (frame + 1) / (double)(DriftCrossfadeFrames + 1);
-				var fadeIn = (float)((1.0 - Math.Cos(Math.PI * t)) * 0.5);
-				var fadeOut = 1f - fadeIn;
-				var beforeIdx = (preEnd + frame) * _channels;
-				var afterIdx = (preEnd + 1 + frame) * _channels;
-				var dstIdx = (preEnd + frame) * _channels;
-				for (var ch = 0; ch < _channels; ch++)
-				{
-					output[dstIdx + ch] = input[beforeIdx + ch] * fadeOut + input[afterIdx + ch] * fadeIn;
-				}
-			}
-
-			var postStartInput = spliceIdx + halfWindow + 1;
-			var postStartOutput = spliceIdx + halfWindow;
-			var postFrames = outFrames - postStartOutput;
-			if (postFrames > 0)
-			{
-				input.Slice(postStartInput * _channels, postFrames * _channels)
-					.CopyTo(output[(postStartOutput * _channels)..]);
-			}
-		}
-
-		private void ApplyRepeatCrossfade(ReadOnlySpan<float> input, Span<float> output, int outFrames)
-		{
-			var spliceIdx = outFrames / 2;
-			var halfWindow = DriftCrossfadeFrames / 2;
-			var preEnd = spliceIdx - halfWindow;
-			if (preEnd > 0)
-			{
-				input[..(preEnd * _channels)].CopyTo(output);
-			}
-
-			for (var frame = 0; frame <= DriftCrossfadeFrames; frame++)
-			{
-				var t = frame / (double)(DriftCrossfadeFrames + 1);
-				var fadeIn = (float)((1.0 - Math.Cos(Math.PI * t)) * 0.5);
-				var fadeOut = 1f - fadeIn;
-				var leftFrame = Math.Max(0, preEnd + frame - 1);
-				var rightFrame = Math.Min(input.Length / _channels - 1, preEnd + frame);
-				var dstIdx = (preEnd + frame) * _channels;
-				var leftIdx = leftFrame * _channels;
-				var rightIdx = rightFrame * _channels;
-				for (var ch = 0; ch < _channels; ch++)
-				{
-					output[dstIdx + ch] = input[leftIdx + ch] * fadeOut + input[rightIdx + ch] * fadeIn;
-				}
-			}
-
-			var postStartInput = spliceIdx + halfWindow;
-			var postStartOutput = spliceIdx + halfWindow + 1;
-			var postFrames = outFrames - postStartOutput;
-			if (postFrames > 0)
-			{
-				input.Slice(postStartInput * _channels, postFrames * _channels)
-					.CopyTo(output[(postStartOutput * _channels)..]);
 			}
 		}
 

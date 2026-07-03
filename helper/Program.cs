@@ -16,6 +16,7 @@ internal static class Program
 				return 0;
 			}
 
+			using var timerResolution = new SystemTimerResolution();
 			JsonLog.Write("status", $"Starting {options.Role} connection to {options.Host}:{options.Port}.");
 
 			using var cts = new CancellationTokenSource();

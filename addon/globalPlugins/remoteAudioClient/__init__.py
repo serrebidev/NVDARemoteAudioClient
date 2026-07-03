@@ -68,6 +68,10 @@ LATENCY_SETTINGS = {
 	"internet": {"prebufferMs": 100, "outputLatencyMs": 30, "bufferMs": 600, "opusFrameMs": 10},
 }
 
+RESUME_MONITOR_INTERVAL_MS = 30000
+RESUME_GAP_SECONDS = 90
+RESUME_SETTLE_MS = 1500
+
 
 def _loadConfig():
 	config = dict(DEFAULT_CONFIG)
@@ -180,75 +184,6 @@ def _latencySettings(config):
 	return LATENCY_SETTINGS[_resolveLatencyProfile(config)]
 
 
-class SettingsDialog(wx.Dialog):
-	def __init__(self, parent, config):
-		super().__init__(parent, title=_("NVDA Remote Audio Settings"))
-		self._config = dict(config)
-
-		mainSizer = wx.BoxSizer(wx.VERTICAL)
-		grid = wx.FlexGridSizer(rows=9, cols=2, vgap=8, hgap=8)
-		grid.AddGrowableCol(1, 1)
-
-		self.hostCtrl = wx.TextCtrl(self, value=str(self._config["host"]))
-		self.portCtrl = wx.SpinCtrl(self, min=1, max=65535, initial=int(self._config["port"]))
-		self.keyCtrl = wx.TextCtrl(self, value=str(self._config["key"]))
-		self.bitrateCtrl = wx.SpinCtrl(self, min=16000, max=510000, initial=int(self._config["bitrate"]))
-		self.latencyChoice = wx.Choice(
-			self,
-			choices=[_latencyProfileLabel(profile) for profile in LATENCY_PROFILES],
-		)
-		self.latencyChoice.SetSelection(list(LATENCY_PROFILES).index(self._config["latencyProfile"]))
-		self.startupChoice = wx.Choice(
-			self,
-			choices=[
-				_startupModeLabel("auto"),
-				_startupModeLabel("disabled"),
-				_startupModeLabel("subscriber"),
-				_startupModeLabel("publisher"),
-			],
-		)
-		self.startupChoice.SetSelection(list(STARTUP_MODES).index(self._config["startupMode"]))
-		self.announceStatusCheck = wx.CheckBox(self, label=_("Announce connection status messages"))
-		self.announceStatusCheck.SetValue(bool(self._config["announceStatus"]))
-		self.useFecCheck = wx.CheckBox(self, label=_("Use Opus packet-loss recovery"))
-		self.useFecCheck.SetValue(bool(self._config["useFec"]))
-		self.verboseLoggingCheck = wx.CheckBox(self, label=_("Verbose diagnostic logging"))
-		self.verboseLoggingCheck.SetValue(bool(self._config["verboseLogging"]))
-
-		for label, control in (
-			(_("Server host:"), self.hostCtrl),
-			(_("Audio port:"), self.portCtrl),
-			(_("Key:"), self.keyCtrl),
-			(_("Send bitrate:"), self.bitrateCtrl),
-			(_("Latency profile:"), self.latencyChoice),
-			(_("Startup action:"), self.startupChoice),
-		):
-			grid.Add(wx.StaticText(self, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
-			grid.Add(control, 1, wx.EXPAND)
-		for control in (self.announceStatusCheck, self.useFecCheck, self.verboseLoggingCheck):
-			grid.Add(wx.StaticText(self, label=""), 0, wx.ALIGN_CENTER_VERTICAL)
-			grid.Add(control, 1, wx.EXPAND)
-
-		mainSizer.Add(grid, 1, wx.ALL | wx.EXPAND, 12)
-		buttonSizer = self.CreateButtonSizer(wx.OK | wx.CANCEL)
-		mainSizer.Add(buttonSizer, 0, wx.ALL | wx.ALIGN_RIGHT, 12)
-		self.SetSizerAndFit(mainSizer)
-		self.CentreOnParent()
-
-	def getConfig(self):
-		return _normalizeConfig({
-			"host": self.hostCtrl.GetValue(),
-			"port": self.portCtrl.GetValue(),
-			"key": self.keyCtrl.GetValue(),
-			"bitrate": self.bitrateCtrl.GetValue(),
-			"latencyProfile": LATENCY_PROFILES[self.latencyChoice.GetSelection()],
-			"startupMode": STARTUP_MODES[self.startupChoice.GetSelection()],
-			"announceStatus": self.announceStatusCheck.GetValue(),
-			"useFec": self.useFecCheck.GetValue(),
-			"verboseLogging": self.verboseLoggingCheck.GetValue(),
-		})
-
-
 class AudioClientProcess:
 	def __init__(self, exitCallback=None):
 		self._process = None
@@ -260,6 +195,8 @@ class AudioClientProcess:
 		self._exitCallback = exitCallback
 		self._announceStatus = DEFAULT_CONFIG["announceStatus"]
 		self._verboseLogging = DEFAULT_CONFIG["verboseLogging"]
+		self._lastEvent = {}
+		self._lastDiagnostics = {}
 
 	def isRunning(self):
 		return self._process is not None and self._process.poll() is None
@@ -407,6 +344,16 @@ class AudioClientProcess:
 		role = _("receiving") if self._role == "subscriber" else _("sending")
 		return _("Remote audio {role}: {message}").format(role=role, message=self._lastMessage)
 
+	def diagnosticsSnapshot(self):
+		return {
+			"running": self.isRunning(),
+			"role": self._role or "",
+			"lastMessage": self._lastMessage,
+			"startedAt": self._startedAt,
+			"lastEvent": dict(self._lastEvent),
+			"lastDiagnostics": dict(self._lastDiagnostics),
+		}
+
 	def _readOutput(self):
 		process = self._process
 		if process is None or process.stdout is None:
@@ -443,6 +390,9 @@ class AudioClientProcess:
 		if message:
 			self._lastMessage = message
 		eventName = event.get("event")
+		self._lastEvent = event
+		if eventName == "diagnostic":
+			self._lastDiagnostics = event
 		if self._verboseLogging or eventName != "diagnostic":
 			log.info("remoteAudio helper: %s", line)
 		if eventName == "connected":
@@ -475,7 +425,7 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 			initial=int(self._config["port"]),
 		)
 
-		self.keyCtrl = helper.addLabeledControl(_("Key:"), wx.TextCtrl)
+		self.keyCtrl = helper.addLabeledControl(_("Session key / room name (not a password):"), wx.TextCtrl)
 		self.keyCtrl.SetValue(str(self._config["key"]))
 
 		self.bitrateCtrl = helper.addLabeledControl(
@@ -550,6 +500,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._autoStartCall = None
 		self._autoRetryCall = None
 		self._remoteScriptSyncCall = None
+		self._resumeMonitorCall = None
+		self._resumeReconnectCall = None
+		self._lastResumeMonitorWall = time.time()
 		self._manualStop = False
 		self._terminating = False
 		self._remoteLocalScripts = (
@@ -558,6 +511,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			self.script_disconnectRemoteAudio,
 			self.script_reconnectRemoteAudio,
 			self.script_reportRemoteAudioStatus,
+			self.script_copyRemoteAudioDiagnostics,
 		)
 		if RemoteAudioSettingsPanel not in gui.settingsDialogs.NVDASettingsDialog.categoryClasses:
 			gui.settingsDialogs.NVDASettingsDialog.categoryClasses.append(RemoteAudioSettingsPanel)
@@ -566,13 +520,30 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			server_installer.ensure_installed_server_ready()
 		self._autoStartCall = core.callLater(1500, self._autoStartFromSettings)
 		self._remoteScriptSyncCall = core.callLater(1500, self._syncRemoteLocalScripts)
+		self._resumeMonitorCall = core.callLater(RESUME_MONITOR_INTERVAL_MS, self._monitorResume)
 
 	def terminate(self):
 		log.info("remoteAudioClient terminate starting")
 		self._terminating = True
 		# NVDA may call terminate while the wx event loop, NVDA Remote, and the
-		# system tray menu are already being torn down. Keep shutdown cleanup
-		# fire-and-forget; stale menu/script references vanish with the process.
+		# system tray menu are already being torn down. Best-effort cleanup keeps
+		# reloads from leaving stale timers, menu items, or local-script bindings.
+		for callName in ("_autoStartCall", "_autoRetryCall", "_remoteScriptSyncCall", "_resumeMonitorCall", "_resumeReconnectCall"):
+			call = getattr(self, callName, None)
+			if call is not None:
+				try:
+					call.Stop()
+				except Exception:
+					pass
+				setattr(self, callName, None)
+		try:
+			self._removeRemoteLocalScripts()
+		except Exception:
+			log.debug("remoteAudioClient local-script cleanup failed", exc_info=True)
+		try:
+			self._destroyMenu()
+		except Exception:
+			log.debug("remoteAudioClient menu cleanup failed", exc_info=True)
 		try:
 			self._client.disableExitCallback()
 			self._client.stop(wait=False)
@@ -595,9 +566,12 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			reconnectItem = self._menu.Append(wx.ID_ANY, _("Reconnect audio"))
 			stopItem = self._menu.Append(wx.ID_ANY, _("Disconnect audio"))
 			statusItem = self._menu.Append(wx.ID_ANY, _("Audio status"))
+			diagnosticsItem = self._menu.Append(wx.ID_ANY, _("Copy audio diagnostics"))
 			self._menu.AppendSeparator()
 			installItem = self._menu.Append(wx.ID_ANY, _("Install audio server (this machine sends audio)..."))
+			updateServerItem = self._menu.Append(wx.ID_ANY, _("Update or repair audio server..."))
 			firewallItem = self._menu.Append(wx.ID_ANY, _("Add firewall rules for audio server..."))
+			removeServerItem = self._menu.Append(wx.ID_ANY, _("Remove or disable audio server..."))
 			settingsItem = self._menu.Append(wx.ID_ANY, _("Audio settings..."))
 
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onReceive, self._receiveItem)
@@ -605,8 +579,11 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onReconnect, reconnectItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onStop, stopItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onStatus, statusItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onCopyDiagnostics, diagnosticsItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onInstallServer, installItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onUpdateServer, updateServerItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onAddFirewallRules, firewallItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onRemoveServer, removeServerItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onSettings, settingsItem)
 			self._menuRoot = toolsMenu.AppendSubMenu(self._menu, _("NVDA Remote Audio"), _("NVDA Remote Audio"))
 			self._updateMenuChecks()
@@ -678,6 +655,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		if self._autoRetryCall is not None:
 			self._autoRetryCall.Stop()
 			self._autoRetryCall = None
+		if self._resumeReconnectCall is not None:
+			self._resumeReconnectCall.Stop()
+			self._resumeReconnectCall = None
 		self._client.stop()
 		self._updateMenuChecks()
 		ui.message(_("Remote audio disconnected") if wasRunning else _("Remote audio is not connected"))
@@ -685,8 +665,14 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	def onInstallServer(self, event):
 		server_installer.offer_install(gui.mainFrame)
 
+	def onUpdateServer(self, event):
+		server_installer.offer_update_or_repair(gui.mainFrame)
+
 	def onAddFirewallRules(self, event):
 		server_installer.add_firewall_rules_only(gui.mainFrame)
+
+	def onRemoveServer(self, event):
+		server_installer.offer_remove(gui.mainFrame)
 
 	def onStop(self, event):
 		self._stopAndAnnounce()
@@ -732,8 +718,69 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	def onStatus(self, event):
 		ui.message(self._client.statusMessage())
 
+	def onCopyDiagnostics(self, event):
+		text = self._diagnosticsText()
+		if self._copyToClipboard(text):
+			ui.message(_("Remote audio diagnostics copied"))
+		else:
+			gui.messageBox(text, _("NVDA Remote Audio diagnostics"), wx.OK | wx.ICON_INFORMATION)
+
 	def onSettings(self, event):
 		gui.mainFrame.popupSettingsDialog(gui.settingsDialogs.NVDASettingsDialog, RemoteAudioSettingsPanel)
+
+	def _copyToClipboard(self, text):
+		data = wx.TextDataObject(text)
+		if not wx.TheClipboard.Open():
+			return False
+		try:
+			wx.TheClipboard.SetData(data)
+			return True
+		finally:
+			wx.TheClipboard.Close()
+
+	def _diagnosticsText(self):
+		config = _loadConfig()
+		latencyProfile = _resolveLatencyProfile(config)
+		latency = _latencySettings(config)
+		client = self._client.diagnosticsSnapshot()
+		server = server_installer.server_status()
+		started = client.get("startedAt")
+		if started:
+			runtime = "{0:.0f}s".format(max(0, time.time() - started))
+		else:
+			runtime = ""
+		lines = [
+			"NVDA Remote Audio diagnostics",
+			"Add-on path: {0}".format(ADDON_DIR),
+			"Helper path: {0}".format(HELPER_PATH),
+			"Helper exists: {0}".format(os.path.exists(HELPER_PATH)),
+			"Configured host: {0}".format(config.get("host")),
+			"Configured port: {0}".format(config.get("port")),
+			"Startup action: {0} (resolved: {1})".format(config.get("startupMode"), _resolveStartupMode(config)),
+			"Latency profile: {0} (resolved: {1}; {2})".format(config.get("latencyProfile"), latencyProfile, latency),
+			"Helper running: {0}".format(client.get("running")),
+			"Helper role: {0}".format(client.get("role")),
+			"Helper runtime: {0}".format(runtime),
+			"Last helper message: {0}".format(client.get("lastMessage")),
+			"Server installed: {0}".format(server.get("installed")),
+			"Server path: {0}".format(server.get("path")),
+			"Server running: {0}".format(server.get("running")),
+			"Startup Run key: {0}".format(server.get("startupRunKey")),
+			"Startup shortcut: {0}".format(server.get("startupShortcut")),
+			"Legacy scheduled task: {0}".format(server.get("legacyTask")),
+			"Firewall rules: {0}".format(server.get("firewallRules")),
+		]
+		lastDiagnostics = client.get("lastDiagnostics") or {}
+		if lastDiagnostics:
+			lines.append("Last helper diagnostics:")
+			for key in sorted(lastDiagnostics):
+				lines.append("  {0}: {1}".format(key, lastDiagnostics[key]))
+		lastEvent = client.get("lastEvent") or {}
+		if lastEvent:
+			lines.append("Last helper event:")
+			for key in sorted(lastEvent):
+				lines.append("  {0}: {1}".format(key, lastEvent[key]))
+		return "\n".join(lines)
 
 	def _runningRemoteClient(self):
 		try:
@@ -781,6 +828,10 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	def script_reportRemoteAudioStatus(self, gesture):
 		self.onStatus(None)
 
+	@script(description=_("Copy remote audio diagnostics"))
+	def script_copyRemoteAudioDiagnostics(self, gesture):
+		self.onCopyDiagnostics(None)
+
 	def _autoStartFromSettings(self):
 		self._autoStartCall = None
 		if self._terminating:
@@ -820,4 +871,28 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			return
 		self._autoRole = role
 		self._client.start(role, self._config)
+		self._updateMenuChecks()
+
+	def _monitorResume(self):
+		self._resumeMonitorCall = None
+		if self._terminating:
+			return
+		now = time.time()
+		elapsed = now - self._lastResumeMonitorWall
+		self._lastResumeMonitorWall = now
+		if elapsed > RESUME_GAP_SECONDS:
+			role = self._client.currentRole()
+			if role is not None:
+				if self._resumeReconnectCall is not None:
+					self._resumeReconnectCall.Stop()
+				config = _loadConfig()
+				log.info("remoteAudio resume gap detected; reconnecting role=%s after settle", role)
+				self._resumeReconnectCall = core.callLater(RESUME_SETTLE_MS, self._resumeReconnectAfterResume, role, config)
+		self._resumeMonitorCall = core.callLater(RESUME_MONITOR_INTERVAL_MS, self._monitorResume)
+
+	def _resumeReconnectAfterResume(self, role, config):
+		self._resumeReconnectCall = None
+		if self._terminating or self._manualStop or self._client.currentRole() != role:
+			return
+		self._client.start(role, config)
 		self._updateMenuChecks()
