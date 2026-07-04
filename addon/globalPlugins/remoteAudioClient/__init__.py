@@ -540,8 +540,14 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			self._removeRemoteLocalScripts()
 		except Exception:
 			log.debug("remoteAudioClient local-script cleanup failed", exc_info=True)
+		# Never touch the system tray menu synchronously here: during NVDA
+		# shutdown the wx event loop is already tearing down and
+		# toolsMenu.Remove() blocks forever, hanging every NVDA restart
+		# (observed 2026-07-04 on NVDA 2026.2beta5). Deferring via CallAfter
+		# keeps add-on reloads clean (event loop alive, cleanup runs) while
+		# at shutdown the deferred call is simply dropped with the process.
 		try:
-			self._destroyMenu()
+			wx.CallAfter(self._destroyMenu)
 		except Exception:
 			log.debug("remoteAudioClient menu cleanup failed", exc_info=True)
 		try:
