@@ -82,7 +82,7 @@ MIT. See [LICENSE](LICENSE).
 
 ## Credit
 
-Original idea: [Ednunp/RemSound](https://github.com/Ednunp/RemSound), a standalone Windows app for streaming low-latency audio between computers with screen-reader accessibility in mind. This repo builds on that idea, packaged as a single self-contained NVDA add-on.
+Features brought to you by: [Ednunp/RemSound](https://github.com/Ednunp/RemSound), a standalone Windows app for streaming low-latency audio between computers with screen-reader accessibility in mind. This repo builds on that idea, packaged as a single self-contained NVDA add-on.
 
 Wire protocol and relay server: [haitun001/NVDARemoteAudioServer](https://github.com/haitun001/NVDARemoteAudioServer). This repo only ships the *client* side; you still need to run that server somewhere.
 
