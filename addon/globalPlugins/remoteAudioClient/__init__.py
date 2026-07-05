@@ -540,16 +540,22 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			self._removeRemoteLocalScripts()
 		except Exception:
 			log.debug("remoteAudioClient local-script cleanup failed", exc_info=True)
-		# Never touch the system tray menu synchronously here: during NVDA
-		# shutdown the wx event loop is already tearing down and
-		# toolsMenu.Remove() blocks forever, hanging every NVDA restart
-		# (observed 2026-07-04 on NVDA 2026.2beta5). Deferring via CallAfter
-		# keeps add-on reloads clean (event loop alive, cleanup runs) while
-		# at shutdown the deferred call is simply dropped with the process.
-		try:
-			wx.CallAfter(self._destroyMenu)
-		except Exception:
-			log.debug("remoteAudioClient menu cleanup failed", exc_info=True)
+		# On a real NVDA exit, core._closeAllWindows() destroys the system tray
+		# icon (and every menu it owns, including ours) immediately after this
+		# method returns, in the same call stack. Touching toolsMenu ourselves
+		# at that point is what made Remove() block forever, hanging every
+		# restart (observed 2026-07-04 on NVDA 2026.2beta5). core sets
+		# core._hasShutdownBeenTriggered before queuing that teardown - NVDA's
+		# own bundled NVDA Remote client (_remoteClient/client.py) uses the same
+		# private flag to detect a real exit, so it's a stable-enough signal.
+		# Only tear the submenu down ourselves for a plugin reload (no exit
+		# pending), where NVDA won't destroy the tray icon and a leftover entry
+		# would otherwise persist or duplicate.
+		if not getattr(core, "_hasShutdownBeenTriggered", False):
+			try:
+				self._destroyMenu()
+			except Exception:
+				log.debug("remoteAudioClient menu cleanup failed", exc_info=True)
 		try:
 			self._client.disableExitCallback()
 			self._client.stop(wait=False)
