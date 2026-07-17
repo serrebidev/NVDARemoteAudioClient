@@ -22,11 +22,21 @@ NVDA add-on side of [NVDA Remote Audio Client](../README.md). Spawns and supervi
   "captureProcess": "",
   "outputDeviceId": "",
   "receiveVolume": 100,
+  "receivePan": 0,
+  "bassDb": 0,
+  "midDb": 0,
+  "trebleDb": 0,
+  "password": "",
+  "qualityMode": "adaptive",
+  "recordReceived": false,
+  "recordingFolder": "%USERPROFILE%\\Documents\\NVDA Remote Audio Recordings",
   "startupMode": "auto",
   "latencyProfile": "auto",
   "announceStatus": true,
   "useFec": true,
-  "verboseLogging": false
+  "verboseLogging": false,
+  "profiles": {},
+  "activeProfile": ""
 }
 ```
 
@@ -36,6 +46,12 @@ NVDA add-on side of [NVDA Remote Audio Client](../README.md). Spawns and supervi
 - `captureProcess`: empty sends system audio with NVDA excluded; otherwise it is a stable process name selected from current Windows audio sessions.
 - `outputDeviceId`: empty follows the Windows default playback device; otherwise it is an active render endpoint ID.
 - `receiveVolume`: subscriber gain from 0 through 200 percent.
+- `receivePan`: subscriber pan from -100 through 100.
+- `bassDb`, `midDb`, `trebleDb`: three-band receive EQ, each from -12 through +12 dB.
+- `password`: optional end-to-end password. It is passed to the helper through an environment variable, never a command-line argument.
+- `qualityMode`: `adaptive` | `opusLive` | `opusBroadcast` | `pcm`.
+- `recordReceived` and `recordingFolder`: timestamped 48 kHz stereo float-WAV recording.
+- `profiles` and `activeProfile`: named snapshots managed from the Tools menu.
 
 - `announceStatus`: when false, routine connect/listen/capture/stopped messages are kept quiet. Errors and explicit commands such as status still speak.
 - `useFec`: when true, the helper enables Opus in-band packet-loss recovery. Turning it off appends `--disable-fec` for advanced low-overhead LAN testing.
@@ -54,16 +70,20 @@ The plugin builds a command line with `subprocess.Popen` and reads its stdout (t
 ```
 NVDARemoteAudioHelper.exe --role subscriber --host <host> --port <port> --key <key> \
   --opus-frame-ms <n> --prebuffer-ms <n> --output-latency-ms <n> --buffer-ms <n> \
-  --output-device-id <id> --receive-volume <percent>
+  --codec <opus|pcm> --password-env <variable> --output-device-id <id> \
+  --receive-volume <percent> --receive-pan <value> --bass-db <db> --mid-db <db> \
+  --treble-db <db> --record-folder <path>
 
 NVDARemoteAudioHelper.exe --role publisher --host <host> --port <port> --key <key> \
-  --opus-frame-ms <n> --exclude-pid <NVDA pid> --bitrate <bps>
+  --opus-frame-ms <n> --codec <opus|pcm> --password-env <variable> \
+  --exclude-pid <NVDA pid> --bitrate <bps>
 
 NVDARemoteAudioHelper.exe --role publisher --host <host> --port <port> --key <key> \
-  --opus-frame-ms <n> --include-process-name <name> --bitrate <bps>
+  --opus-frame-ms <n> --codec <opus|pcm> --password-env <variable> \
+  --include-process-name <name> --bitrate <bps>
 ```
 
-`--exclude-pid` is set to NVDA's own PID (`os.getpid()` from inside the plugin), which is what makes WASAPI drop NVDA's audio from the system stream. A configured application replaces it with `--include-process-name`; the helper resolves that stable name through current Windows audio sessions. When `useFec` is false, the plugin adds `--disable-fec` to either role.
+`--exclude-pid` is set to NVDA's own PID (`os.getpid()` from inside the plugin), which makes WASAPI drop NVDA's audio. A configured application replaces it with `--include-process-name`. Payload v2 adds codec metadata and optional AES-256-GCM encryption while remaining opaque to the existing relay. Updated subscribers also accept legacy Opus when no password is required.
 
 ## Build a `.nvda-addon`
 

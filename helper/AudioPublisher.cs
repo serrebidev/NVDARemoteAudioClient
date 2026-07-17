@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Concentus;
 using Concentus.Enums;
 
@@ -17,6 +18,9 @@ internal static class AudioPublisher
 		int bitrate,
 		int opusFrameMilliseconds,
 		bool useInbandFec,
+		AudioPayloadCodec codec,
+		string password,
+		string roomKey,
 		CancellationToken cancellationToken)
 	{
 		var packetSamplesPerChannel = FrameSamplesPerChannel(opusFrameMilliseconds);
@@ -28,6 +32,8 @@ internal static class AudioPublisher
 			["bitrate"] = bitrate,
 			["opus_frame_ms"] = opusFrameMilliseconds,
 			["opus_fec"] = useInbandFec,
+			["codec"] = codec.ToString(),
+			["encrypted"] = !string.IsNullOrEmpty(password),
 			["queue_capacity"] = channelCapacity,
 		});
 
@@ -36,7 +42,7 @@ internal static class AudioPublisher
 		using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 		var capture = new ProcessLoopbackCapture(targetPid, includeTargetTree, packetSamplesPerChannel);
 		var captureTask = capture.RunAsync(queue, linkedCts.Token);
-		var encodeTask = EncodeAndSendLoopAsync(queue, session, bitrate, opusFrameMilliseconds, useInbandFec, linkedCts.Token);
+		var encodeTask = EncodeAndSendLoopAsync(queue, session, bitrate, opusFrameMilliseconds, useInbandFec, codec, password, roomKey, linkedCts.Token);
 
 		var completed = await Task.WhenAny(captureTask, encodeTask);
 		try
@@ -63,6 +69,9 @@ internal static class AudioPublisher
 		int bitrate,
 		int opusFrameMilliseconds,
 		bool useInbandFec,
+		AudioPayloadCodec codec,
+		string password,
+		string roomKey,
 		CancellationToken cancellationToken)
 	{
 		var packetSamplesPerChannel = FrameSamplesPerChannel(opusFrameMilliseconds);
@@ -72,10 +81,14 @@ internal static class AudioPublisher
 			["bitrate"] = bitrate,
 			["opus_frame_ms"] = opusFrameMilliseconds,
 			["opus_fec"] = useInbandFec,
+			["codec"] = codec.ToString(),
+			["encrypted"] = !string.IsNullOrEmpty(password),
 		});
 
-		var encoder = CreateEncoder(bitrate, useInbandFec);
+		var encoder = codec == AudioPayloadCodec.Opus ? CreateEncoder(bitrate, useInbandFec) : null;
+		using var payloadProtocol = new AudioPayloadProtocol(password, roomKey);
 		var opusBuffer = new byte[session.MaxPayloadBytes];
+		var transportBuffer = new byte[session.MaxPayloadBytes];
 		var frame = new short[packetShorts];
 		var sequence = 0UL;
 		var phase = 0.0;
@@ -99,8 +112,19 @@ internal static class AudioPublisher
 					}
 				}
 
-				var encodedLength = EncodePacket(encoder, frame, packetSamplesPerChannel, opusBuffer);
-				await session.SendAudioAsync(sequence++, (ulong)start.ElapsedMilliseconds, opusBuffer.AsMemory(0, encodedLength), cancellationToken);
+				var timestamp = (ulong)start.ElapsedMilliseconds;
+				ReadOnlySpan<byte> rawPayload;
+				if (codec == AudioPayloadCodec.Opus)
+				{
+					var encodedLength = EncodePacket(encoder!, frame, packetSamplesPerChannel, opusBuffer);
+					rawPayload = opusBuffer.AsSpan(0, encodedLength);
+				}
+				else
+				{
+					rawPayload = MemoryMarshal.AsBytes(frame.AsSpan());
+				}
+				var transportLength = payloadProtocol.Encode(codec, opusFrameMilliseconds, sequence, timestamp, rawPayload, transportBuffer);
+				await session.SendAudioAsync(sequence++, timestamp, transportBuffer.AsMemory(0, transportLength), cancellationToken);
 
 				nextFrameAt += TimeSpan.FromMilliseconds(opusFrameMilliseconds);
 				var delay = nextFrameAt - start.Elapsed;
@@ -122,11 +146,16 @@ internal static class AudioPublisher
 		int bitrate,
 		int opusFrameMilliseconds,
 		bool useInbandFec,
+		AudioPayloadCodec codec,
+		string password,
+		string roomKey,
 		CancellationToken cancellationToken)
 	{
-		var encoder = CreateEncoder(bitrate, useInbandFec);
+		var encoder = codec == AudioPayloadCodec.Opus ? CreateEncoder(bitrate, useInbandFec) : null;
+		using var payloadProtocol = new AudioPayloadProtocol(password, roomKey);
 		var packetSamplesPerChannel = FrameSamplesPerChannel(opusFrameMilliseconds);
 		var opusBuffer = new byte[session.MaxPayloadBytes];
+		var transportBuffer = new byte[session.MaxPayloadBytes];
 		var sequence = 0UL;
 		var start = Stopwatch.StartNew();
 		var nextDiagnosticAt = TimeSpan.FromSeconds(5);
@@ -138,8 +167,19 @@ internal static class AudioPublisher
 			{
 				try
 				{
-					var encodedLength = EncodePacket(encoder, frame.ReadOnlySpan, packetSamplesPerChannel, opusBuffer);
-					await session.SendAudioAsync(sequence++, (ulong)start.ElapsedMilliseconds, opusBuffer.AsMemory(0, encodedLength), cancellationToken);
+					var timestamp = (ulong)start.ElapsedMilliseconds;
+					ReadOnlySpan<byte> rawPayload;
+					if (codec == AudioPayloadCodec.Opus)
+					{
+						var encodedLength = EncodePacket(encoder!, frame.ReadOnlySpan, packetSamplesPerChannel, opusBuffer);
+						rawPayload = opusBuffer.AsSpan(0, encodedLength);
+					}
+					else
+					{
+						rawPayload = MemoryMarshal.AsBytes(frame.ReadOnlySpan);
+					}
+					var transportLength = payloadProtocol.Encode(codec, opusFrameMilliseconds, sequence, timestamp, rawPayload, transportBuffer);
+					await session.SendAudioAsync(sequence++, timestamp, transportBuffer.AsMemory(0, transportLength), cancellationToken);
 					packetsSent++;
 				}
 				finally
@@ -153,6 +193,8 @@ internal static class AudioPublisher
 					{
 						["packets_sent"] = packetsSent,
 						["opus_frame_ms"] = opusFrameMilliseconds,
+						["codec"] = codec.ToString(),
+						["encrypted"] = payloadProtocol.EncryptionEnabled,
 						["capture_queue_drops"] = frames.DroppedFrames,
 						["udp_max_send_ms"] = session.TakeMaxUdpSendMilliseconds(),
 					});

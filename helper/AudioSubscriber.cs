@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Concentus;
 
 namespace NVDARemoteAudioHelper;
@@ -17,11 +18,32 @@ internal static class AudioSubscriber
 		int opusFrameMilliseconds,
 		string outputDeviceId,
 		int receiveVolume,
+		int receivePan,
+		int bassDb,
+		int midDb,
+		int trebleDb,
+		string password,
+		string roomKey,
+		string recordFolder,
 		CancellationToken cancellationToken)
 	{
-		using var playback = new PlaybackSink(SampleRate, Channels, prebufferMs, outputLatencyMs, playbackBufferMs, outputDeviceId, receiveVolume);
+		using var playback = new PlaybackSink(
+			SampleRate,
+			Channels,
+			prebufferMs,
+			outputLatencyMs,
+			playbackBufferMs,
+			outputDeviceId,
+			receiveVolume,
+			receivePan,
+			bassDb,
+			midDb,
+			trebleDb);
+		using var payloadProtocol = new AudioPayloadProtocol(password, roomKey);
+		using var recorder = new ReceivedAudioRecorder(recordFolder, SampleRate, Channels);
 		var decoder = OpusCodecFactory.CreateDecoder(SampleRate, Channels, TextWriter.Null);
 		var decoded = new float[MaxDecodedSamplesPerChannel * Channels];
+		var plaintext = new byte[session.MaxPayloadBytes];
 		var lastSequence = ulong.MaxValue;
 		var fallbackSamplesPerChannel = SampleRate * Math.Clamp(opusFrameMilliseconds, 5, 20) / 1000;
 		var lastSamplesPerChannel = fallbackSamplesPerChannel;
@@ -30,6 +52,8 @@ internal static class AudioSubscriber
 		var fecRecoveries = 0UL;
 		var plcFrames = 0UL;
 		var unrecoveredGaps = 0UL;
+		var authenticationFailures = 0UL;
+		var pcmPackets = 0UL;
 		var start = Stopwatch.StartNew();
 		var nextDiagnosticAt = TimeSpan.FromSeconds(5);
 
@@ -41,6 +65,12 @@ internal static class AudioSubscriber
 			["opus_frame_ms"] = opusFrameMilliseconds,
 			["output_device_id"] = outputDeviceId,
 			["receive_volume"] = receiveVolume,
+			["receive_pan"] = receivePan,
+			["bass_db"] = bassDb,
+			["mid_db"] = midDb,
+			["treble_db"] = trebleDb,
+			["encrypted"] = !string.IsNullOrEmpty(password),
+			["recording"] = recorder.IsRecording,
 		});
 
 		try
@@ -48,6 +78,26 @@ internal static class AudioSubscriber
 			while (!cancellationToken.IsCancellationRequested)
 			{
 				var frame = await session.ReceiveAudioAsync(cancellationToken);
+				if (!payloadProtocol.TryDecode(
+					frame.Payload,
+					frame.Sequence,
+					frame.TimestampMs,
+					opusFrameMilliseconds,
+					plaintext,
+					out var payload))
+				{
+					authenticationFailures++;
+					if (authenticationFailures >= 3)
+					{
+						throw new InvalidOperationException("Unable to authenticate remote audio. Check that both machines use the same end-to-end password and updated add-on version.");
+					}
+					continue;
+				}
+				if (!string.IsNullOrEmpty(password) && !payload.Encrypted)
+				{
+					throw new InvalidOperationException("The publisher is sending unencrypted audio while this receiver requires an end-to-end password.");
+				}
+				authenticationFailures = 0;
 				if (lastSequence != ulong.MaxValue && frame.Sequence <= lastSequence)
 				{
 					duplicateOrLatePackets++;
@@ -55,10 +105,11 @@ internal static class AudioSubscriber
 				}
 
 				packetsReceived++;
-				if (lastSequence != ulong.MaxValue && frame.Sequence > lastSequence + 1)
+				var encodedPayload = plaintext.AsSpan(0, payload.Length);
+				if (payload.Codec == AudioPayloadCodec.Opus && lastSequence != ulong.MaxValue && frame.Sequence > lastSequence + 1)
 				{
 					var gap = frame.Sequence - lastSequence - 1;
-					if (gap == 1 && TryDecodeFec(decoder, frame.Payload.AsSpan(), decoded, lastSamplesPerChannel, playback))
+					if (gap == 1 && TryDecodeFec(decoder, encodedPayload, decoded, lastSamplesPerChannel, playback, recorder))
 					{
 						fecRecoveries++;
 					}
@@ -68,7 +119,7 @@ internal static class AudioSubscriber
 						var missingPackets = Math.Min(gap, 5UL);
 						for (var i = 0UL; i < missingPackets; i++)
 						{
-							if (TryDecodePacketLossConcealment(decoder, decoded, lastSamplesPerChannel, playback))
+							if (TryDecodePacketLossConcealment(decoder, decoded, lastSamplesPerChannel, playback, recorder))
 							{
 								plcFrames++;
 							}
@@ -77,11 +128,35 @@ internal static class AudioSubscriber
 				}
 
 				lastSequence = frame.Sequence;
-				var samplesPerChannel = decoder.Decode(frame.Payload.AsSpan(), decoded.AsSpan(), MaxDecodedSamplesPerChannel, false);
+				int samplesPerChannel;
+				if (payload.Codec == AudioPayloadCodec.Opus)
+				{
+					samplesPerChannel = decoder.Decode(encodedPayload, decoded.AsSpan(), MaxDecodedSamplesPerChannel, false);
+				}
+				else
+				{
+					if (encodedPayload.Length % (Channels * sizeof(short)) != 0)
+					{
+						continue;
+					}
+					var pcm = MemoryMarshal.Cast<byte, short>(encodedPayload);
+					samplesPerChannel = pcm.Length / Channels;
+					if (samplesPerChannel > MaxDecodedSamplesPerChannel)
+					{
+						continue;
+					}
+					for (var index = 0; index < pcm.Length; index++)
+					{
+						decoded[index] = pcm[index] / 32768f;
+					}
+					pcmPackets++;
+				}
 				if (samplesPerChannel > 0)
 				{
 					lastSamplesPerChannel = samplesPerChannel;
-					playback.AddSamples(decoded.AsSpan(0, samplesPerChannel * Channels));
+					var sampleCount = samplesPerChannel * Channels;
+					recorder.Write(decoded, sampleCount);
+					playback.AddSamples(decoded.AsSpan(0, sampleCount));
 				}
 
 				if (start.Elapsed >= nextDiagnosticAt)
@@ -93,6 +168,8 @@ internal static class AudioSubscriber
 						["fec_recoveries"] = fecRecoveries,
 						["plc_frames"] = plcFrames,
 						["unrecovered_gaps"] = unrecoveredGaps,
+						["authentication_failures"] = authenticationFailures,
+						["pcm_packets"] = pcmPackets,
 						["buffer_ms"] = playback.CurrentBufferMs,
 						["underruns"] = playback.Underruns,
 						["partial_reads"] = playback.PartialReads,
@@ -119,7 +196,8 @@ internal static class AudioSubscriber
 		ReadOnlySpan<byte> payload,
 		float[] decoded,
 		int samplesPerChannel,
-		PlaybackSink playback)
+		PlaybackSink playback,
+		ReceivedAudioRecorder recorder)
 	{
 		try
 		{
@@ -129,7 +207,9 @@ internal static class AudioSubscriber
 				return false;
 			}
 
-			playback.AddSamples(decoded.AsSpan(0, fecSamplesPerChannel * Channels));
+			var sampleCount = fecSamplesPerChannel * Channels;
+			recorder.Write(decoded, sampleCount);
+			playback.AddSamples(decoded.AsSpan(0, sampleCount));
 			return true;
 		}
 		catch
@@ -142,7 +222,8 @@ internal static class AudioSubscriber
 		IOpusDecoder decoder,
 		float[] decoded,
 		int samplesPerChannel,
-		PlaybackSink playback)
+		PlaybackSink playback,
+		ReceivedAudioRecorder recorder)
 	{
 		try
 		{
@@ -152,7 +233,9 @@ internal static class AudioSubscriber
 				return false;
 			}
 
-			playback.AddSamples(decoded.AsSpan(0, concealedSamplesPerChannel * Channels));
+			var sampleCount = concealedSamplesPerChannel * Channels;
+			recorder.Write(decoded, sampleCount);
+			playback.AddSamples(decoded.AsSpan(0, sampleCount));
 			return true;
 		}
 		catch

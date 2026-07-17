@@ -6,7 +6,7 @@
 </head>
 <body>
 <h1>NVDA Remote Audio Client</h1>
-<p>This add-on connects to <a href="https://github.com/haitun001/NVDARemoteAudioServer">NVDARemoteAudioServer</a> to send or receive audio between two Windows machines. It can send all system audio except NVDA or isolate one selected application. NVDA speech itself stays on NVDA Remote.</p>
+<p>This add-on connects to <a href="https://github.com/haitun001/NVDARemoteAudioServer">NVDARemoteAudioServer</a> to send or receive secure low-latency audio between two Windows machines. It can send all system audio except NVDA or isolate one selected application. NVDA speech itself stays on NVDA Remote.</p>
 
 <h2>First-time setup</h2>
 <ol>
@@ -14,6 +14,7 @@
   <li>On the machine that should send audio: open <strong>NVDA menu &gt; Tools &gt; NVDA Remote Audio &gt; Install audio server (this machine sends audio)...</strong> The add-on downloads the latest <a href="https://github.com/haitun001/NVDARemoteAudioServer">NVDARemoteAudioServer</a> from GitHub, installs it, starts it, and registers a per-user startup entry so it survives reboots. It will also prompt for UAC to add Windows Firewall inbound allow rules for TCP and UDP port 6838. If you decline UAC, run the helper menu item <em>Add firewall rules for audio server...</em> later, or open the port manually.</li>
   <li>On both machines, open <strong>NVDA menu &gt; Preferences &gt; Settings &gt; NVDA Remote Audio</strong>.</li>
   <li>Set the same <strong>Host</strong>, <strong>Port</strong> (6838 by default), and <strong>Session key / room name</strong> on both. The key is required, but it is not an encryption password.</li>
+  <li>Set the same <strong>End-to-end encryption password</strong> on both machines. This is strongly recommended.</li>
   <li>Optionally choose <strong>Audio to send</strong> on the sending machine and <strong>Receive through</strong> plus <strong>Receive volume</strong> on the receiving machine.</li>
   <li>Restart NVDA, or use the Tools menu items to connect manually. If you skipped step 2, picking <strong>Send this computer's audio</strong> will offer to install the server then.</li>
 </ol>
@@ -35,8 +36,9 @@
 <p>The Tools menu provides receive, send, reconnect, disconnect, status, copy diagnostics, server install, server update/repair, firewall, server remove/disable, and settings actions. Receive, send, disconnect, reconnect, status, and copy diagnostics are also available as unbound NVDA Input Gestures under the <strong>NVDA Remote Audio</strong> category. While you are controlling another machine with NVDA Remote, those gestures stay local instead of being forwarded as keystrokes.</p>
 <p>In settings, clear <strong>Announce connection status messages</strong> to keep routine connect/listen/capture/stopped messages quiet. Errors and explicit status commands still speak. <strong>Use Opus packet-loss recovery</strong> controls Opus in-band FEC, which is enabled by default. Enable <strong>Verbose diagnostic logging</strong> when you need helper timing details in NVDA's log.</p>
 <p><strong>Audio to send</strong> defaults to all system audio with NVDA excluded. To send one application, start it and make it play or open audio before opening settings. If that application restarts, reconnect remote audio so its new process is selected. <strong>Receive through</strong> can follow the Windows default or pin playback to an active endpoint. <strong>Receive volume</strong> ranges from 0 to 200 percent; 100 percent is unchanged.</p>
+<p><strong>Audio quality</strong> offers adaptive Opus, 5 ms live Opus, broadcast-quality Opus, and uncompressed PCM. The receiver also has pan and three-band bass, midrange, and treble controls. Received audio can be recorded to timestamped WAV files. Named connection profiles can be saved, loaded, and deleted from the Tools menu.</p>
 
 <h2>Privacy</h2>
-<p>Publisher mode uses Windows process-loopback exclusion to drop NVDA from the system mix, or process-loopback inclusion to isolate the selected application's process tree. Audio is sent unencrypted over UDP &mdash; protect the link yourself (LAN, VPN, or Tailscale).</p>
+<p>Publisher mode uses Windows process-loopback exclusion to drop NVDA from the system mix, or process-loopback inclusion to isolate the selected application's process tree. When a password is set, every audio packet is encrypted and authenticated end to end with AES-256-GCM; the relay cannot hear it. Leaving the password empty enables unencrypted compatibility mode and should only be used on trusted networks or inside a VPN.</p>
 </body>
 </html>

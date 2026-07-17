@@ -68,8 +68,18 @@ try {
 	if ($LASTEXITCODE -ne 0) {
 		throw "Helper --help failed with exit code $LASTEXITCODE"
 	}
-	foreach ($expected in '--role', '--host', '--key', '--opus-frame-ms', '--disable-fec', '--prebuffer-ms', '--include-process-name', '--output-device-id', '--receive-volume', '--list-audio-apps', '--list-output-devices') {
+	foreach ($expected in '--role', '--host', '--key', '--opus-frame-ms', '--disable-fec', '--prebuffer-ms', '--include-process-name', '--output-device-id', '--receive-volume', '--receive-pan', '--bass-db', '--mid-db', '--treble-db', '--password-env', '--codec', '--record-folder', '--list-audio-apps', '--list-output-devices', '--self-test') {
 		Assert-Contains $helpText $expected
+	}
+
+	Write-Host 'Running helper protocol and encryption self-tests...'
+	$selfTestJson = (& $helperExe --self-test) -join "`n"
+	if ($LASTEXITCODE -ne 0) {
+		throw "Helper --self-test failed with exit code $LASTEXITCODE"
+	}
+	$selfTestPayload = $selfTestJson | ConvertFrom-Json
+	if ($selfTestPayload.event -ne 'self_test' -or $selfTestPayload.encryption -ne 'passed') {
+		throw 'Helper --self-test did not report successful encryption tests'
 	}
 
 	Write-Host 'Checking live audio discovery commands...'
@@ -96,6 +106,11 @@ try {
 		throw 'Helper accepted an invalid process name'
 	}
 	Assert-Contains $invalidProcessOutput '--include-process-name'
+	$invalidPcmOutput = (& $helperExe --role publisher --host localhost --key test --exclude-pid 1 --codec pcm --opus-frame-ms 10 2>&1) -join "`n"
+	if ($LASTEXITCODE -eq 0) {
+		throw 'Helper accepted a PCM packet duration larger than the relay MTU allows'
+	}
+	Assert-Contains $invalidPcmOutput 'PCM mode requires'
 
 	$python = Get-Command python -ErrorAction SilentlyContinue
 	if ($null -eq $python) {

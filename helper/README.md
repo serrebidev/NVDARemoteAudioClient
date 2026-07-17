@@ -4,8 +4,8 @@ Standalone Windows console EXE that does the audio work for the [NVDA Remote Aud
 
 ## What it does
 
-- **Publisher**: WASAPI process-loopback capture, either excluding the NVDA process tree from system audio or including one selected application's process tree, → Opus encode (48 kHz stereo, 5/10/20 ms packets with optional FEC) → UDP to the server.
-- **Subscriber**: UDP from the server → Opus decode with FEC recovery / packet-loss concealment → drift-corrected ring buffer → selectable WASAPI event-sync playback endpoint and receive gain.
+- **Publisher**: WASAPI process-loopback capture → Opus or PCM → optional AES-256-GCM payload-v2 encryption → UDP relay.
+- **Subscriber**: UDP relay → payload authentication/decryption → Opus or PCM decode → optional WAV recording → drift-corrected buffer → volume, pan, three-band EQ, and selectable WASAPI playback.
 - **Control plane**: TCP JSON handshake on the same port, periodic heartbeats, UDP session registration.
 
 The helper logs structured JSON events to stdout, one per line. The add-on parses them to drive NVDA messages.
@@ -56,13 +56,20 @@ Packet size and subscriber-side jitter buffering are tunable from CLI (the add-o
 ```
 --opus-frame-ms <ms>      Opus packet duration: 5, 10, or 20. Default 10.
 --disable-fec             Disable Opus in-band forward error correction.
+--codec opus|pcm          Opus or uncompressed PCM16 transport.
+--password-env <name>     Read the end-to-end password from an environment variable.
 --prebuffer-ms <ms>       Startup buffer before playback begins. Default 90.
 --output-latency-ms <ms>  WASAPI event-sync output latency. Default 80.
 --buffer-ms <ms>          Max playback buffer cap. Default 450.
 --output-device-id <id>   Active render endpoint ID; omitted follows the Windows default.
 --receive-volume <pct>    Subscriber gain from 0 to 200 percent. Default 100.
+--receive-pan <value>     Subscriber pan from -100 to 100.
+--bass-db/--mid-db/--treble-db <db>
+                           Three-band subscriber EQ from -12 to +12 dB.
+--record-folder <path>    Record received audio to a timestamped WAV file.
 --list-audio-apps         Emit current audio-session applications as JSON and exit.
 --list-output-devices     Emit active render endpoints as JSON and exit.
+--self-test               Test encryption, password rejection, PCM, and legacy Opus.
 ```
 
 ## Files
@@ -76,6 +83,9 @@ Packet size and subscriber-side jitter buffering are tunable from CLI (the add-o
 | `ProcessLoopbackCapture.cs` | `ActivateAudioInterfaceAsync` against `VAD\Process_Loopback`, `IAudioClient`/`IAudioCaptureClient` interop, include/exclude process-tree wiring. |
 | `AudioDeviceCatalog.cs` | Live Windows audio-session application and render-endpoint discovery. |
 | `AudioSubscriber.cs` | Opus decode, in-band FEC recovery, PLC, diagnostic counters. |
+| `AudioPayloadProtocol.cs` | Backward-compatible payload-v2 framing, PBKDF2-SHA256, and AES-256-GCM. |
+| `ReceivedAudioRecorder.cs` | Timestamped received-audio WAV writer. |
+| `HelperSelfTest.cs` | Offline protocol, encryption, and compatibility tests. |
 | `PlaybackSink.cs` | WASAPI event-sync output, float ring buffer, prebuffer, underrun fade, trim, and continuous drift resampling. |
 | `NetworkPriority.cs` | Best-effort qWAVE voice-priority attachment for the UDP socket. |
 | `SystemTimerResolution.cs` | Holds a fine Windows timer resolution while the helper is active. |

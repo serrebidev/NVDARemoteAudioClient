@@ -10,6 +10,13 @@ internal sealed class HelperOptions
 	public string CaptureProcessName { get; private init; } = "";
 	public string OutputDeviceId { get; private init; } = "";
 	public int ReceiveVolume { get; private init; } = 100;
+	public int ReceivePan { get; private init; }
+	public int BassDb { get; private init; }
+	public int MidDb { get; private init; }
+	public int TrebleDb { get; private init; }
+	public string Password { get; private init; } = "";
+	public AudioPayloadCodec Codec { get; private init; } = AudioPayloadCodec.Opus;
+	public string RecordFolder { get; private init; } = "";
 	public int Bitrate { get; private init; } = 96000;
 	public int PrebufferMs { get; private init; } = 90;
 	public int OutputLatencyMs { get; private init; } = 80;
@@ -19,6 +26,7 @@ internal sealed class HelperOptions
 	public bool TestTone { get; private init; }
 	public bool ListAudioApps { get; private init; }
 	public bool ListOutputDevices { get; private init; }
+	public bool SelfTest { get; private init; }
 	public bool ShowHelp { get; private init; }
 
 	public const string Usage =
@@ -35,6 +43,9 @@ internal sealed class HelperOptions
 		  --bitrate <bits/sec>   Publisher Opus bitrate. Default: 96000
 		  --opus-frame-ms <ms>   Opus packet duration: 5, 10, or 20. Default: 10
 		  --disable-fec          Disable Opus in-band forward error correction
+		  --password-env <name> Read the end-to-end AES-GCM password from this environment variable
+		  --password <password> Direct password value for manual testing; environment variables are safer
+		  --codec opus|pcm       Audio transport codec. Default: opus
 		  --prebuffer-ms <ms>    Subscriber startup jitter buffer. Default: 90
 		  --output-latency-ms <ms>
 		                        Subscriber output device latency. Default: 80
@@ -52,6 +63,14 @@ internal sealed class HelperOptions
 		  --output-device-id <id>
 		                        Playback endpoint ID. Empty uses the Windows default
 		  --receive-volume <pct> Playback volume from 0 to 200. Default: 100
+		  --receive-pan <value>  Stereo pan from -100 (left) to 100 (right)
+		  --bass-db <db>         Low-shelf gain from -12 to 12 dB
+		  --mid-db <db>          Mid peaking gain from -12 to 12 dB
+		  --treble-db <db>       High-shelf gain from -12 to 12 dB
+		  --record-folder <path> Record received audio to a timestamped WAV file
+
+		Diagnostics:
+		  --self-test            Run protocol and encryption self-tests, then exit
 		""";
 
 	public static HelperOptions Parse(string[] args)
@@ -68,7 +87,7 @@ internal sealed class HelperOptions
 			}
 
 			var optionName = arg[2..];
-			if (optionName is "help" or "test-tone" or "disable-fec" or "list-audio-apps" or "list-output-devices")
+			if (optionName is "help" or "test-tone" or "disable-fec" or "list-audio-apps" or "list-output-devices" or "self-test")
 			{
 				flags.Add(optionName);
 				continue;
@@ -94,6 +113,10 @@ internal sealed class HelperOptions
 		{
 			return new HelperOptions { ListOutputDevices = true };
 		}
+		if (flags.Contains("self-test"))
+		{
+			return new HelperOptions { SelfTest = true };
+		}
 
 		var roleText = Required(values, "role");
 		var role = roleText.Equals("publisher", StringComparison.OrdinalIgnoreCase)
@@ -112,6 +135,29 @@ internal sealed class HelperOptions
 		var captureProcessName = values.GetValueOrDefault("include-process-name", "").Trim();
 		var outputDeviceId = values.GetValueOrDefault("output-device-id", "").Trim();
 		var receiveVolume = ParseInt(values, "receive-volume", 100, 0, 200);
+		var receivePan = ParseInt(values, "receive-pan", 0, -100, 100);
+		var bassDb = ParseInt(values, "bass-db", 0, -12, 12);
+		var midDb = ParseInt(values, "mid-db", 0, -12, 12);
+		var trebleDb = ParseInt(values, "treble-db", 0, -12, 12);
+		var passwordEnvironmentName = values.GetValueOrDefault("password-env", "").Trim();
+		var password = passwordEnvironmentName.Length > 0
+			? Environment.GetEnvironmentVariable(passwordEnvironmentName) ?? ""
+			: values.GetValueOrDefault("password", "");
+		if (passwordEnvironmentName.Length > 0 && string.IsNullOrEmpty(password))
+		{
+			throw new ArgumentException($"The password environment variable '{passwordEnvironmentName}' is empty or missing.");
+		}
+		if (password.Length > 512)
+		{
+			throw new ArgumentException("--password must be at most 512 characters.");
+		}
+		var codecText = values.GetValueOrDefault("codec", "opus");
+		var codec = codecText.Equals("opus", StringComparison.OrdinalIgnoreCase)
+			? AudioPayloadCodec.Opus
+			: codecText.Equals("pcm", StringComparison.OrdinalIgnoreCase)
+				? AudioPayloadCodec.Pcm16
+				: throw new ArgumentException("--codec must be opus or pcm.");
+		var recordFolder = values.GetValueOrDefault("record-folder", "").Trim();
 		var testTone = flags.Contains("test-tone");
 		var opusFec = !flags.Contains("disable-fec");
 
@@ -134,6 +180,10 @@ internal sealed class HelperOptions
 		{
 			throw new ArgumentException("--key cannot be empty.");
 		}
+		if (codec == AudioPayloadCodec.Pcm16 && opusFrameMs != 5)
+		{
+			throw new ArgumentException("PCM mode requires --opus-frame-ms 5 so packets stay within the relay MTU.");
+		}
 
 		return new HelperOptions
 		{
@@ -145,6 +195,13 @@ internal sealed class HelperOptions
 			CaptureProcessName = captureProcessName,
 			OutputDeviceId = outputDeviceId,
 			ReceiveVolume = receiveVolume,
+			ReceivePan = receivePan,
+			BassDb = bassDb,
+			MidDb = midDb,
+			TrebleDb = trebleDb,
+			Password = password,
+			Codec = codec,
+			RecordFolder = recordFolder,
 			Bitrate = bitrate,
 			PrebufferMs = prebufferMs,
 			OutputLatencyMs = outputLatencyMs,

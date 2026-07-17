@@ -25,6 +25,11 @@ internal static class Program
 				AudioDeviceCatalog.WriteOutputDevices();
 				return 0;
 			}
+			if (options.SelfTest)
+			{
+				HelperSelfTest.Run();
+				return 0;
+			}
 
 			using var timerResolution = new SystemTimerResolution();
 			JsonLog.Write("status", $"Starting {options.Role} connection to {options.Host}:{options.Port}.");
@@ -52,7 +57,7 @@ internal static class Program
 			{
 				if (options.TestTone)
 				{
-					await AudioPublisher.RunTestToneAsync(session, options.Bitrate, options.OpusFrameMs, options.OpusFec, cts.Token);
+					await AudioPublisher.RunTestToneAsync(session, options.Bitrate, options.OpusFrameMs, options.OpusFec, options.Codec, options.Password, options.Key, cts.Token);
 				}
 				else
 				{
@@ -65,7 +70,7 @@ internal static class Program
 						includeTargetTree = true;
 						captureLabel = options.CaptureProcessName;
 					}
-					await AudioPublisher.RunCaptureAsync(session, targetPid, includeTargetTree, captureLabel, options.Bitrate, options.OpusFrameMs, options.OpusFec, cts.Token);
+					await AudioPublisher.RunCaptureAsync(session, targetPid, includeTargetTree, captureLabel, options.Bitrate, options.OpusFrameMs, options.OpusFec, options.Codec, options.Password, options.Key, cts.Token);
 				}
 			}
 			else
@@ -78,6 +83,13 @@ internal static class Program
 					options.OpusFrameMs,
 					options.OutputDeviceId,
 					options.ReceiveVolume,
+					options.ReceivePan,
+					options.BassDb,
+					options.MidDb,
+					options.TrebleDb,
+					options.Password,
+					options.Key,
+					options.RecordFolder,
 					cts.Token);
 			}
 

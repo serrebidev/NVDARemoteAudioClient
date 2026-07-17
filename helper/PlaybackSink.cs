@@ -20,11 +20,24 @@ internal sealed class PlaybackSink : IDisposable
 		int outputLatencyMilliseconds,
 		int bufferMilliseconds,
 		string outputDeviceId,
-		int receiveVolume)
+		int receiveVolume,
+		int receivePan,
+		int bassDb,
+		int midDb,
+		int trebleDb)
 	{
 		var targetLatencyMs = Math.Clamp(prebufferMilliseconds, 5, 1000);
 		var capacityMs = Math.Clamp(Math.Max(bufferMilliseconds, targetLatencyMs * 4), 40, 3000);
-		_provider = new LowLatencyFloatProvider(sampleRate, channels, targetLatencyMs, capacityMs, receiveVolume);
+		_provider = new LowLatencyFloatProvider(
+			sampleRate,
+			channels,
+			targetLatencyMs,
+			capacityMs,
+			receiveVolume,
+			receivePan,
+			bassDb,
+			midDb,
+			trebleDb);
 
 		var desiredLatency = Math.Clamp(outputLatencyMilliseconds, 5, 1000);
 		WasapiOut? wasapi = null;
@@ -47,6 +60,10 @@ internal sealed class PlaybackSink : IDisposable
 				["output_latency_ms"] = desiredLatency,
 				["output_device"] = _selectedDevice?.FriendlyName ?? "Windows default",
 				["receive_volume"] = receiveVolume,
+				["receive_pan"] = receivePan,
+				["bass_db"] = bassDb,
+				["mid_db"] = midDb,
+				["treble_db"] = trebleDb,
 			});
 		}
 		catch (Exception ex)
@@ -150,9 +167,18 @@ internal sealed class PlaybackSink : IDisposable
 		private float[] _resamplerOutputScratch = new float[2048];
 		private int _lastInputFramesAvailable;
 
-		private readonly float _volume;
+		private readonly AudioShaper _shaper;
 
-		public LowLatencyFloatProvider(int sampleRate, int channels, int targetLatencyMs, int capacityMs, int receiveVolume)
+		public LowLatencyFloatProvider(
+			int sampleRate,
+			int channels,
+			int targetLatencyMs,
+			int capacityMs,
+			int receiveVolume,
+			int receivePan,
+			int bassDb,
+			int midDb,
+			int trebleDb)
 		{
 			_sampleRate = sampleRate;
 			_channels = channels;
@@ -165,7 +191,7 @@ internal sealed class PlaybackSink : IDisposable
 			_driftResampler.SetMode(interp: true, filtercnt: 0, sinc: false);
 			_driftResampler.SetFeedMode(false);
 			_driftResampler.SetRates(sampleRate, sampleRate);
-			_volume = Math.Clamp(receiveVolume, 0, 200) / 100f;
+			_shaper = new AudioShaper(sampleRate, channels, receiveVolume, receivePan, bassDb, midDb, trebleDb);
 		}
 
 		public WaveFormat WaveFormat { get; }
@@ -231,13 +257,7 @@ internal sealed class PlaybackSink : IDisposable
 			TrimBacklogIfNeeded();
 			UpdateDriftResamplerRateIfDue(outFrames);
 			ReadThroughResampler(output, outFrames);
-			if (_volume != 1f)
-			{
-				for (var index = 0; index < output.Length; index++)
-				{
-					output[index] = Math.Clamp(output[index] * _volume, -1f, 1f);
-				}
-			}
+			_shaper.Process(output);
 
 			return count;
 		}
@@ -438,5 +458,47 @@ internal sealed class PlaybackSink : IDisposable
 			AlignToFrame(Math.Max(_bytesPerFrame, milliseconds * _bytesPerSecond / 1000));
 
 		private int AlignToFrame(int bytes) => bytes / _bytesPerFrame * _bytesPerFrame;
+	}
+}
+
+internal sealed class AudioShaper
+{
+	private readonly int _channels;
+	private readonly float _volume;
+	private readonly float _leftPanGain;
+	private readonly float _rightPanGain;
+	private readonly BiQuadFilter[] _bassFilters;
+	private readonly BiQuadFilter[] _midFilters;
+	private readonly BiQuadFilter[] _trebleFilters;
+
+	public AudioShaper(int sampleRate, int channels, int receiveVolume, int receivePan, int bassDb, int midDb, int trebleDb)
+	{
+		_channels = channels;
+		_volume = Math.Clamp(receiveVolume, 0, 200) / 100f;
+		var pan = Math.Clamp(receivePan, -100, 100) / 100f;
+		_leftPanGain = pan > 0 ? 1f - pan : 1f;
+		_rightPanGain = pan < 0 ? 1f + pan : 1f;
+		_bassFilters = Enumerable.Range(0, channels)
+			.Select(_ => BiQuadFilter.LowShelf(sampleRate, 180f, 0.8f, Math.Clamp(bassDb, -12, 12)))
+			.ToArray();
+		_midFilters = Enumerable.Range(0, channels)
+			.Select(_ => BiQuadFilter.PeakingEQ(sampleRate, 1200f, 0.9f, Math.Clamp(midDb, -12, 12)))
+			.ToArray();
+		_trebleFilters = Enumerable.Range(0, channels)
+			.Select(_ => BiQuadFilter.HighShelf(sampleRate, 6000f, 0.8f, Math.Clamp(trebleDb, -12, 12)))
+			.ToArray();
+	}
+
+	public void Process(Span<float> samples)
+	{
+		for (var index = 0; index < samples.Length; index++)
+		{
+			var channel = index % _channels;
+			var sample = _bassFilters[channel].Transform(samples[index]);
+			sample = _midFilters[channel].Transform(sample);
+			sample = _trebleFilters[channel].Transform(sample);
+			var panGain = channel == 0 ? _leftPanGain : channel == 1 ? _rightPanGain : 1f;
+			samples[index] = Math.Clamp(sample * _volume * panGain, -1f, 1f);
+		}
 	}
 }

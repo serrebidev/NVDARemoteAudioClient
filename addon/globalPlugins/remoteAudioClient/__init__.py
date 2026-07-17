@@ -35,11 +35,21 @@ DEFAULT_CONFIG = {
 	"captureProcess": "",
 	"outputDeviceId": "",
 	"receiveVolume": 100,
+	"receivePan": 0,
+	"bassDb": 0,
+	"midDb": 0,
+	"trebleDb": 0,
+	"password": "",
+	"qualityMode": "adaptive",
+	"recordReceived": False,
+	"recordingFolder": os.path.join(os.path.expanduser("~"), "Documents", "NVDA Remote Audio Recordings"),
 	"startupMode": "auto",
 	"latencyProfile": "auto",
 	"announceStatus": True,
 	"useFec": True,
 	"verboseLogging": False,
+	"profiles": {},
+	"activeProfile": "",
 }
 
 # Mirrors NVDARemoteAudioServer's server-side rules so we surface a friendly
@@ -64,6 +74,7 @@ def _validateKey(key):
 
 STARTUP_MODES = ("auto", "disabled", "subscriber", "publisher")
 LATENCY_PROFILES = ("auto", "lan", "tailscale", "internet")
+QUALITY_MODES = ("adaptive", "opusLive", "opusBroadcast", "pcm")
 LATENCY_SETTINGS = {
 	# LAN uses 5 ms Opus frames and a small WASAPI event-sync playout target.
 	"lan": {"prebufferMs": 15, "outputLatencyMs": 15, "bufferMs": 120, "opusFrameMs": 5},
@@ -120,7 +131,7 @@ def _normalizeConfig(config):
 				return False
 		return bool(value)
 
-	return {
+	normalized = {
 		"host": str(config.get("host") or DEFAULT_CONFIG["host"]).strip() or DEFAULT_CONFIG["host"],
 		"port": clampInt(config.get("port"), DEFAULT_CONFIG["port"], 1, 65535),
 		"key": str(config.get("key") if config.get("key") is not None else DEFAULT_CONFIG["key"]),
@@ -128,12 +139,36 @@ def _normalizeConfig(config):
 		"captureProcess": str(config.get("captureProcess") or "").strip().lower(),
 		"outputDeviceId": str(config.get("outputDeviceId") or "").strip(),
 		"receiveVolume": clampInt(config.get("receiveVolume"), DEFAULT_CONFIG["receiveVolume"], 0, 200),
+		"receivePan": clampInt(config.get("receivePan"), DEFAULT_CONFIG["receivePan"], -100, 100),
+		"bassDb": clampInt(config.get("bassDb"), DEFAULT_CONFIG["bassDb"], -12, 12),
+		"midDb": clampInt(config.get("midDb"), DEFAULT_CONFIG["midDb"], -12, 12),
+		"trebleDb": clampInt(config.get("trebleDb"), DEFAULT_CONFIG["trebleDb"], -12, 12),
+		"password": str(config.get("password") or ""),
+		"qualityMode": config.get("qualityMode") if config.get("qualityMode") in QUALITY_MODES else DEFAULT_CONFIG["qualityMode"],
+		"recordReceived": asBool(config.get("recordReceived"), DEFAULT_CONFIG["recordReceived"]),
+		"recordingFolder": str(config.get("recordingFolder") or DEFAULT_CONFIG["recordingFolder"]).strip(),
 		"startupMode": config.get("startupMode") if config.get("startupMode") in STARTUP_MODES else DEFAULT_CONFIG["startupMode"],
 		"latencyProfile": config.get("latencyProfile") if config.get("latencyProfile") in LATENCY_PROFILES else DEFAULT_CONFIG["latencyProfile"],
 		"announceStatus": asBool(config.get("announceStatus"), DEFAULT_CONFIG["announceStatus"]),
 		"useFec": asBool(config.get("useFec"), DEFAULT_CONFIG["useFec"]),
 		"verboseLogging": asBool(config.get("verboseLogging"), DEFAULT_CONFIG["verboseLogging"]),
 	}
+	profiles = {}
+	rawProfiles = config.get("profiles") if isinstance(config.get("profiles"), dict) else {}
+	for name, profile in rawProfiles.items():
+		name = str(name).strip()
+		if not name or not isinstance(profile, dict):
+			continue
+		profileData = dict(profile)
+		profileData["profiles"] = {}
+		normalizedProfile = _normalizeConfig(profileData)
+		normalizedProfile.pop("profiles", None)
+		normalizedProfile.pop("activeProfile", None)
+		profiles[name] = normalizedProfile
+	normalized["profiles"] = profiles
+	activeProfile = str(config.get("activeProfile") or "").strip()
+	normalized["activeProfile"] = activeProfile if activeProfile in profiles else ""
+	return normalized
 
 
 def _startupModeLabel(mode):
@@ -190,6 +225,34 @@ def _latencySettings(config):
 	return LATENCY_SETTINGS[_resolveLatencyProfile(config)]
 
 
+def _qualityModeLabel(mode):
+	return {
+		"adaptive": _("Opus: follow latency profile"),
+		"opusLive": _("Opus: live, lowest codec delay"),
+		"opusBroadcast": _("Opus: broadcast quality"),
+		"pcm": _("PCM: uncompressed LAN quality"),
+	}.get(mode, _("Opus: follow latency profile"))
+
+
+def _qualitySettings(config):
+	mode = config.get("qualityMode", "adaptive")
+	if mode == "opusLive":
+		return {"codec": "opus", "frameMs": 5}
+	if mode == "opusBroadcast":
+		return {"codec": "opus", "frameMs": 20}
+	if mode == "pcm":
+		return {"codec": "pcm", "frameMs": 5}
+	return {"codec": "opus", "frameMs": _latencySettings(config)["opusFrameMs"]}
+
+
+def _profileSnapshot(config):
+	return {
+		key: value
+		for key, value in config.items()
+		if key not in ("profiles", "activeProfile")
+	}
+
+
 def _queryHelperCatalog(flag, eventName, collectionName):
 	"""Return a live helper catalog, or an empty list if discovery is unavailable."""
 	if not os.path.exists(HELPER_PATH):
@@ -232,6 +295,38 @@ def _audioApps():
 def _outputDevices():
 	devices = _queryHelperCatalog("--list-output-devices", "output_devices", "devices")
 	return [device for device in devices if isinstance(device, dict) and device.get("Id")]
+
+
+def _runHelperSelfTest():
+	if not os.path.exists(HELPER_PATH):
+		return False, _("Remote audio helper is missing")
+	try:
+		startupinfo = subprocess.STARTUPINFO()
+		startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+		completed = subprocess.run(
+			[HELPER_PATH, "--self-test"],
+			stdin=subprocess.DEVNULL,
+			stdout=subprocess.PIPE,
+			stderr=subprocess.STDOUT,
+			text=True,
+			encoding="utf-8",
+			errors="replace",
+			timeout=30,
+			creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+			startupinfo=startupinfo,
+			check=False,
+		)
+		for line in completed.stdout.splitlines():
+			try:
+				payload = json.loads(line)
+			except Exception:
+				continue
+			if payload.get("event") == "self_test":
+				return True, str(payload.get("message") or _("All helper self-tests passed"))
+		return False, completed.stdout.strip() or _("Helper self-test failed")
+	except Exception as e:
+		log.error("Remote audio helper self-test failed", exc_info=True)
+		return False, str(e)
 
 
 class AudioClientProcess:
@@ -282,9 +377,18 @@ class AudioClientProcess:
 			"--key", config["key"],
 		]
 		latency = _latencySettings(config)
+		quality = _qualitySettings(config)
 		args.extend([
-			"--opus-frame-ms", str(latency["opusFrameMs"]),
+			"--opus-frame-ms", str(quality["frameMs"]),
+			"--codec", quality["codec"],
 		])
+		password = str(config.get("password") or "")
+		childEnv = None
+		if password:
+			passwordEnvName = "NVDA_REMOTE_AUDIO_PASSWORD"
+			args.extend(["--password-env", passwordEnvName])
+			childEnv = os.environ.copy()
+			childEnv[passwordEnvName] = password
 		if not config.get("useFec", DEFAULT_CONFIG["useFec"]):
 			args.append("--disable-fec")
 		if role == "publisher":
@@ -300,10 +404,16 @@ class AudioClientProcess:
 				"--output-latency-ms", str(latency["outputLatencyMs"]),
 				"--buffer-ms", str(latency["bufferMs"]),
 				"--receive-volume", str(config.get("receiveVolume", DEFAULT_CONFIG["receiveVolume"])),
+				"--receive-pan", str(config.get("receivePan", DEFAULT_CONFIG["receivePan"])),
+				"--bass-db", str(config.get("bassDb", DEFAULT_CONFIG["bassDb"])),
+				"--mid-db", str(config.get("midDb", DEFAULT_CONFIG["midDb"])),
+				"--treble-db", str(config.get("trebleDb", DEFAULT_CONFIG["trebleDb"])),
 			])
 			outputDeviceId = str(config.get("outputDeviceId") or "").strip()
 			if outputDeviceId:
 				args.extend(["--output-device-id", outputDeviceId])
+			if config.get("recordReceived") and str(config.get("recordingFolder") or "").strip():
+				args.extend(["--record-folder", str(config["recordingFolder"]).strip()])
 
 		try:
 			startupinfo = subprocess.STARTUPINFO()
@@ -321,6 +431,7 @@ class AudioClientProcess:
 				errors="replace",
 				creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
 				startupinfo=startupinfo,
+				env=childEnv,
 			)
 		except Exception as e:
 			self._process = None
@@ -461,6 +572,8 @@ class AudioClientProcess:
 			log.error("Remote audio helper error: %s", line)
 		elif eventName == "status" and message in ("Capture started.", "Listening for remote audio."):
 			self._queueStatus(_(message))
+		elif eventName == "recording":
+			self._queueStatus(_(message))
 
 
 class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
@@ -483,6 +596,12 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 
 		self.keyCtrl = helper.addLabeledControl(_("Session key / room name (not a password):"), wx.TextCtrl)
 		self.keyCtrl.SetValue(str(self._config["key"]))
+		self.passwordCtrl = helper.addLabeledControl(
+			_("End-to-end encryption password (optional):"),
+			wx.TextCtrl,
+			style=wx.TE_PASSWORD,
+		)
+		self.passwordCtrl.SetValue(str(self._config["password"]))
 
 		self.bitrateCtrl = helper.addLabeledControl(
 			_("Send bitrate:"),
@@ -491,6 +610,12 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 			max=510000,
 			initial=int(self._config["bitrate"]),
 		)
+		self.qualityChoice = helper.addLabeledControl(
+			_("Audio quality:"),
+			wx.Choice,
+			choices=[_qualityModeLabel(mode) for mode in QUALITY_MODES],
+		)
+		self.qualityChoice.SetSelection(list(QUALITY_MODES).index(self._config["qualityMode"]))
 		self._captureProcessValues = [""]
 		captureChoices = [_('System audio (NVDA excluded)')]
 		configuredCapture = self._config["captureProcess"]
@@ -529,6 +654,38 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 			max=200,
 			initial=int(self._config["receiveVolume"]),
 		)
+		self.receivePanCtrl = helper.addLabeledControl(
+			_("Receive pan (-100 left, 0 center, 100 right):"),
+			wx.SpinCtrl,
+			min=-100,
+			max=100,
+			initial=int(self._config["receivePan"]),
+		)
+		self.bassCtrl = helper.addLabeledControl(
+			_("Receive bass (dB):"),
+			wx.SpinCtrl,
+			min=-12,
+			max=12,
+			initial=int(self._config["bassDb"]),
+		)
+		self.midCtrl = helper.addLabeledControl(
+			_("Receive midrange (dB):"),
+			wx.SpinCtrl,
+			min=-12,
+			max=12,
+			initial=int(self._config["midDb"]),
+		)
+		self.trebleCtrl = helper.addLabeledControl(
+			_("Receive treble (dB):"),
+			wx.SpinCtrl,
+			min=-12,
+			max=12,
+			initial=int(self._config["trebleDb"]),
+		)
+		self.recordReceivedCheck = helper.addItem(wx.CheckBox(self, label=_("Record received audio to WAV")))
+		self.recordReceivedCheck.SetValue(bool(self._config["recordReceived"]))
+		self.recordingFolderCtrl = helper.addLabeledControl(_("Recording folder:"), wx.TextCtrl)
+		self.recordingFolderCtrl.SetValue(str(self._config["recordingFolder"]))
 		self.latencyChoice = helper.addLabeledControl(
 			_("Latency profile:"),
 			wx.Choice,
@@ -566,20 +723,31 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 		return super().isValid()
 
 	def onSave(self):
-		_saveConfig({
+		config = _loadConfig()
+		config.update({
 			"host": self.hostCtrl.GetValue(),
 			"port": self.portCtrl.GetValue(),
 			"key": self.keyCtrl.GetValue(),
+			"password": self.passwordCtrl.GetValue(),
 			"bitrate": self.bitrateCtrl.GetValue(),
+			"qualityMode": QUALITY_MODES[self.qualityChoice.GetSelection()],
 			"captureProcess": self._captureProcessValues[self.captureChoice.GetSelection()],
 			"outputDeviceId": self._outputDeviceValues[self.outputDeviceChoice.GetSelection()],
 			"receiveVolume": self.receiveVolumeCtrl.GetValue(),
+			"receivePan": self.receivePanCtrl.GetValue(),
+			"bassDb": self.bassCtrl.GetValue(),
+			"midDb": self.midCtrl.GetValue(),
+			"trebleDb": self.trebleCtrl.GetValue(),
+			"recordReceived": self.recordReceivedCheck.GetValue(),
+			"recordingFolder": self.recordingFolderCtrl.GetValue(),
 			"latencyProfile": LATENCY_PROFILES[self.latencyChoice.GetSelection()],
 			"startupMode": STARTUP_MODES[self.startupChoice.GetSelection()],
 			"announceStatus": self.announceStatusCheck.GetValue(),
 			"useFec": self.useFecCheck.GetValue(),
 			"verboseLogging": self.verboseLoggingCheck.GetValue(),
 		})
+		config["activeProfile"] = ""
+		_saveConfig(config)
 
 
 class GlobalPlugin(globalPluginHandler.GlobalPlugin):
@@ -593,6 +761,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._menuRoot = None
 		self._receiveItem = None
 		self._sendItem = None
+		self._recordItem = None
 		self._autoRole = None
 		self._autoStartCall = None
 		self._autoRetryCall = None
@@ -609,6 +778,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			self.script_reconnectRemoteAudio,
 			self.script_reportRemoteAudioStatus,
 			self.script_copyRemoteAudioDiagnostics,
+			self.script_toggleRemoteAudioRecording,
 		)
 		if RemoteAudioSettingsPanel not in gui.settingsDialogs.NVDASettingsDialog.categoryClasses:
 			gui.settingsDialogs.NVDASettingsDialog.categoryClasses.append(RemoteAudioSettingsPanel)
@@ -674,25 +844,39 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			self._menu.AppendSeparator()
 			reconnectItem = self._menu.Append(wx.ID_ANY, _("Reconnect audio"))
 			stopItem = self._menu.Append(wx.ID_ANY, _("Disconnect audio"))
+			self._recordItem = self._menu.AppendCheckItem(wx.ID_ANY, _("Record received audio"))
+			openRecordingsItem = self._menu.Append(wx.ID_ANY, _("Open recordings folder"))
 			statusItem = self._menu.Append(wx.ID_ANY, _("Audio status"))
 			diagnosticsItem = self._menu.Append(wx.ID_ANY, _("Copy audio diagnostics"))
+			selfTestItem = self._menu.Append(wx.ID_ANY, _("Run helper self-test"))
 			self._menu.AppendSeparator()
 			installItem = self._menu.Append(wx.ID_ANY, _("Install audio server (this machine sends audio)..."))
 			updateServerItem = self._menu.Append(wx.ID_ANY, _("Update or repair audio server..."))
 			firewallItem = self._menu.Append(wx.ID_ANY, _("Add firewall rules for audio server..."))
 			removeServerItem = self._menu.Append(wx.ID_ANY, _("Remove or disable audio server..."))
+			self._menu.AppendSeparator()
+			saveProfileItem = self._menu.Append(wx.ID_ANY, _("Save current settings as profile..."))
+			loadProfileItem = self._menu.Append(wx.ID_ANY, _("Load connection profile..."))
+			deleteProfileItem = self._menu.Append(wx.ID_ANY, _("Delete connection profile..."))
+			self._menu.AppendSeparator()
 			settingsItem = self._menu.Append(wx.ID_ANY, _("Audio settings..."))
 
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onReceive, self._receiveItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onSend, self._sendItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onReconnect, reconnectItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onStop, stopItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onToggleRecording, self._recordItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onOpenRecordings, openRecordingsItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onStatus, statusItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onCopyDiagnostics, diagnosticsItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onSelfTest, selfTestItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onInstallServer, installItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onUpdateServer, updateServerItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onAddFirewallRules, firewallItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onRemoveServer, removeServerItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onSaveProfile, saveProfileItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onLoadProfile, loadProfileItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onDeleteProfile, deleteProfileItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onSettings, settingsItem)
 			self._menuRoot = toolsMenu.AppendSubMenu(self._menu, _("NVDA Remote Audio"), _("NVDA Remote Audio"))
 			self._updateMenuChecks()
@@ -707,6 +891,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		try:
 			self._receiveItem.Check(role == "subscriber")
 			self._sendItem.Check(role == "publisher")
+			if self._recordItem is not None:
+				self._recordItem.Check(bool(_loadConfig().get("recordReceived")))
 		except Exception:
 			log.debug("Failed to update remote audio menu checks", exc_info=True)
 
@@ -717,6 +903,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._menu = None
 		self._receiveItem = None
 		self._sendItem = None
+		self._recordItem = None
 		try:
 			if menuRoot is not None:
 				gui.mainFrame.sysTrayIcon.toolsMenu.Remove(menuRoot)
@@ -827,6 +1014,36 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	def onStatus(self, event):
 		ui.message(self._client.statusMessage())
 
+	def onToggleRecording(self, event):
+		config = _loadConfig()
+		enabled = event.IsChecked() if event is not None and hasattr(event, "IsChecked") else not config.get("recordReceived")
+		config["recordReceived"] = bool(enabled)
+		self._config = _saveConfig(config)
+		self._updateMenuChecks()
+		ui.message(_("Received-audio recording enabled") if enabled else _("Received-audio recording disabled"))
+		if self._client.currentRole() == "subscriber":
+			self.onReconnect(None)
+
+	def onOpenRecordings(self, event):
+		folder = str(_loadConfig().get("recordingFolder") or DEFAULT_CONFIG["recordingFolder"])
+		try:
+			os.makedirs(folder, exist_ok=True)
+			os.startfile(folder)
+		except Exception as e:
+			log.error("Failed to open remote audio recordings folder", exc_info=True)
+			ui.message(_("Could not open recordings folder: {error}").format(error=e))
+
+	def onSelfTest(self, event):
+		ui.message(_("Running remote audio helper self-test"))
+		threading.Thread(target=self._selfTestWorker, name="remoteAudioSelfTest", daemon=True).start()
+
+	def _selfTestWorker(self):
+		success, message = _runHelperSelfTest()
+		if success:
+			wx.CallAfter(ui.message, message)
+		else:
+			wx.CallAfter(ui.message, _("Remote audio self-test failed: {error}").format(error=message))
+
 	def onCopyDiagnostics(self, event):
 		text = self._diagnosticsText()
 		if self._copyToClipboard(text):
@@ -836,6 +1053,64 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 	def onSettings(self, event):
 		gui.mainFrame.popupSettingsDialog(gui.settingsDialogs.NVDASettingsDialog, RemoteAudioSettingsPanel)
+
+	def onSaveProfile(self, event):
+		dialog = wx.TextEntryDialog(
+			gui.mainFrame,
+			_("Enter a name for these remote audio settings:"),
+			_("Save connection profile"),
+		)
+		try:
+			if dialog.ShowModal() != wx.ID_OK:
+				return
+			name = dialog.GetValue().strip()
+		finally:
+			dialog.Destroy()
+		if not name:
+			ui.message(_("Profile name cannot be empty"))
+			return
+		config = _loadConfig()
+		config["profiles"][name] = _profileSnapshot(config)
+		config["activeProfile"] = name
+		_saveConfig(config)
+		ui.message(_("Remote audio profile saved: {name}").format(name=name))
+
+	def _chooseProfile(self, title):
+		config = _loadConfig()
+		names = sorted(config.get("profiles", {}).keys(), key=str.casefold)
+		if not names:
+			ui.message(_("No remote audio profiles have been saved"))
+			return config, None
+		dialog = wx.SingleChoiceDialog(gui.mainFrame, _("Choose a connection profile:"), title, names)
+		try:
+			if dialog.ShowModal() != wx.ID_OK:
+				return config, None
+			return config, dialog.GetStringSelection()
+		finally:
+			dialog.Destroy()
+
+	def onLoadProfile(self, event):
+		config, name = self._chooseProfile(_("Load connection profile"))
+		if name is None:
+			return
+		profiles = config["profiles"]
+		loaded = dict(profiles[name])
+		loaded["profiles"] = profiles
+		loaded["activeProfile"] = name
+		self._config = _saveConfig(loaded)
+		ui.message(_("Remote audio profile loaded: {name}").format(name=name))
+		if self._client.isRunning():
+			self.onReconnect(None)
+
+	def onDeleteProfile(self, event):
+		config, name = self._chooseProfile(_("Delete connection profile"))
+		if name is None:
+			return
+		del config["profiles"][name]
+		if config.get("activeProfile") == name:
+			config["activeProfile"] = ""
+		_saveConfig(config)
+		ui.message(_("Remote audio profile deleted: {name}").format(name=name))
 
 	def _copyToClipboard(self, text):
 		data = wx.TextDataObject(text)
@@ -867,9 +1142,16 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			"Configured port: {0}".format(config.get("port")),
 			"Startup action: {0} (resolved: {1})".format(config.get("startupMode"), _resolveStartupMode(config)),
 			"Latency profile: {0} (resolved: {1}; {2})".format(config.get("latencyProfile"), latencyProfile, latency),
+			"Quality mode: {0} ({1})".format(config.get("qualityMode"), _qualitySettings(config)),
+			"End-to-end encryption: {0}".format(bool(config.get("password"))),
+			"Active profile: {0}".format(config.get("activeProfile") or "none"),
 			"Capture source: {0}".format(config.get("captureProcess") or "system audio (NVDA excluded)"),
 			"Playback device ID: {0}".format(config.get("outputDeviceId") or "Windows default"),
 			"Receive volume: {0}%".format(config.get("receiveVolume")),
+			"Receive pan: {0}".format(config.get("receivePan")),
+			"Receive EQ: bass {0} dB, mid {1} dB, treble {2} dB".format(config.get("bassDb"), config.get("midDb"), config.get("trebleDb")),
+			"Record received audio: {0}".format(config.get("recordReceived")),
+			"Recording folder: {0}".format(config.get("recordingFolder")),
 			"Helper running: {0}".format(client.get("running")),
 			"Helper role: {0}".format(client.get("role")),
 			"Helper runtime: {0}".format(runtime),
@@ -943,6 +1225,10 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	@script(description=_("Copy remote audio diagnostics"))
 	def script_copyRemoteAudioDiagnostics(self, gesture):
 		self.onCopyDiagnostics(None)
+
+	@script(description=_("Toggle recording of received remote audio"))
+	def script_toggleRemoteAudioRecording(self, gesture):
+		self.onToggleRecording(None)
 
 	def _autoStartFromSettings(self):
 		self._autoStartCall = None
