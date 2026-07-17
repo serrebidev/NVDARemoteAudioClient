@@ -7,6 +7,9 @@ internal sealed class HelperOptions
 	public int Port { get; private init; } = 6838;
 	public string Key { get; private init; } = "";
 	public int ExcludePid { get; private init; }
+	public string CaptureProcessName { get; private init; } = "";
+	public string OutputDeviceId { get; private init; } = "";
+	public int ReceiveVolume { get; private init; } = 100;
 	public int Bitrate { get; private init; } = 96000;
 	public int PrebufferMs { get; private init; } = 90;
 	public int OutputLatencyMs { get; private init; } = 80;
@@ -14,6 +17,8 @@ internal sealed class HelperOptions
 	public int OpusFrameMs { get; private init; } = 10;
 	public bool OpusFec { get; private init; } = true;
 	public bool TestTone { get; private init; }
+	public bool ListAudioApps { get; private init; }
+	public bool ListOutputDevices { get; private init; }
 	public bool ShowHelp { get; private init; }
 
 	public const string Usage =
@@ -34,10 +39,19 @@ internal sealed class HelperOptions
 		  --output-latency-ms <ms>
 		                        Subscriber output device latency. Default: 80
 		  --buffer-ms <ms>       Subscriber maximum playback buffer. Default: 450
+		  --list-audio-apps      List applications with active audio sessions as JSON
+		  --list-output-devices  List active playback devices as JSON
 
 		Publisher:
 		  --exclude-pid <pid>    NVDA process ID to exclude from captured system audio
+		  --include-process-name <name>
+		                        Send only this application's audio (process name, no .exe)
 		  --test-tone            Send a generated tone instead of capturing audio
+
+		Subscriber:
+		  --output-device-id <id>
+		                        Playback endpoint ID. Empty uses the Windows default
+		  --receive-volume <pct> Playback volume from 0 to 200. Default: 100
 		""";
 
 	public static HelperOptions Parse(string[] args)
@@ -54,7 +68,7 @@ internal sealed class HelperOptions
 			}
 
 			var optionName = arg[2..];
-			if (optionName is "help" or "test-tone" or "disable-fec")
+			if (optionName is "help" or "test-tone" or "disable-fec" or "list-audio-apps" or "list-output-devices")
 			{
 				flags.Add(optionName);
 				continue;
@@ -72,6 +86,14 @@ internal sealed class HelperOptions
 		{
 			return new HelperOptions { ShowHelp = true };
 		}
+		if (flags.Contains("list-audio-apps"))
+		{
+			return new HelperOptions { ListAudioApps = true };
+		}
+		if (flags.Contains("list-output-devices"))
+		{
+			return new HelperOptions { ListOutputDevices = true };
+		}
 
 		var roleText = Required(values, "role");
 		var role = roleText.Equals("publisher", StringComparison.OrdinalIgnoreCase)
@@ -87,12 +109,24 @@ internal sealed class HelperOptions
 		var playbackBufferMs = ParseInt(values, "buffer-ms", 450, 40, 3000);
 		var opusFrameMs = ParseOpusFrameMilliseconds(values);
 		var excludePid = ParseInt(values, "exclude-pid", 0, 0, int.MaxValue);
+		var captureProcessName = values.GetValueOrDefault("include-process-name", "").Trim();
+		var outputDeviceId = values.GetValueOrDefault("output-device-id", "").Trim();
+		var receiveVolume = ParseInt(values, "receive-volume", 100, 0, 200);
 		var testTone = flags.Contains("test-tone");
 		var opusFec = !flags.Contains("disable-fec");
 
-		if (role == ConnectionRole.Publisher && !testTone && excludePid <= 0)
+		if (captureProcessName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
 		{
-			throw new ArgumentException("Publisher mode requires --exclude-pid unless --test-tone is used.");
+			captureProcessName = captureProcessName[..^4];
+		}
+		if (captureProcessName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || captureProcessName.Contains(Path.DirectorySeparatorChar))
+		{
+			throw new ArgumentException("--include-process-name must be a process name without a path.");
+		}
+
+		if (role == ConnectionRole.Publisher && !testTone && excludePid <= 0 && string.IsNullOrWhiteSpace(captureProcessName))
+		{
+			throw new ArgumentException("Publisher mode requires --exclude-pid or --include-process-name unless --test-tone is used.");
 		}
 
 		var key = Required(values, "key");
@@ -108,6 +142,9 @@ internal sealed class HelperOptions
 			Port = port,
 			Key = key,
 			ExcludePid = excludePid,
+			CaptureProcessName = captureProcessName,
+			OutputDeviceId = outputDeviceId,
+			ReceiveVolume = receiveVolume,
 			Bitrate = bitrate,
 			PrebufferMs = prebufferMs,
 			OutputLatencyMs = outputLatencyMs,

@@ -68,9 +68,34 @@ try {
 	if ($LASTEXITCODE -ne 0) {
 		throw "Helper --help failed with exit code $LASTEXITCODE"
 	}
-	foreach ($expected in '--role', '--host', '--key', '--opus-frame-ms', '--disable-fec', '--prebuffer-ms') {
+	foreach ($expected in '--role', '--host', '--key', '--opus-frame-ms', '--disable-fec', '--prebuffer-ms', '--include-process-name', '--output-device-id', '--receive-volume', '--list-audio-apps', '--list-output-devices') {
 		Assert-Contains $helpText $expected
 	}
+
+	Write-Host 'Checking live audio discovery commands...'
+	$outputDeviceJson = (& $helperExe --list-output-devices) -join "`n"
+	if ($LASTEXITCODE -ne 0) {
+		throw "Helper --list-output-devices failed with exit code $LASTEXITCODE"
+	}
+	$outputDevicePayload = $outputDeviceJson | ConvertFrom-Json
+	if ($outputDevicePayload.event -ne 'output_devices' -or $null -eq $outputDevicePayload.devices) {
+		throw 'Helper --list-output-devices did not return an output_devices payload'
+	}
+	$audioAppJson = (& $helperExe --list-audio-apps) -join "`n"
+	if ($LASTEXITCODE -ne 0) {
+		throw "Helper --list-audio-apps failed with exit code $LASTEXITCODE"
+	}
+	$audioAppPayload = $audioAppJson | ConvertFrom-Json
+	if ($audioAppPayload.event -ne 'audio_apps' -or $null -eq $audioAppPayload.apps) {
+		throw 'Helper --list-audio-apps did not return an audio_apps payload'
+	}
+
+	Write-Host 'Checking new helper option validation...'
+	$invalidProcessOutput = (& $helperExe --role publisher --host localhost --key test --include-process-name 'bad/name' 2>&1) -join "`n"
+	if ($LASTEXITCODE -eq 0) {
+		throw 'Helper accepted an invalid process name'
+	}
+	Assert-Contains $invalidProcessOutput '--include-process-name'
 
 	$python = Get-Command python -ErrorAction SilentlyContinue
 	if ($null -eq $python) {

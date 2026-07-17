@@ -19,6 +19,9 @@ NVDA add-on side of [NVDA Remote Audio Client](../README.md). Spawns and supervi
   "port": 6838,
   "key": "",
   "bitrate": 128000,
+  "captureProcess": "",
+  "outputDeviceId": "",
+  "receiveVolume": 100,
   "startupMode": "auto",
   "latencyProfile": "auto",
   "announceStatus": true,
@@ -30,6 +33,9 @@ NVDA add-on side of [NVDA Remote Audio Client](../README.md). Spawns and supervi
 - `key` is the session key / room name. It is required and must match on both sides, but it is not an encryption password.
 - `startupMode`: `auto` | `disabled` | `subscriber` | `publisher`. `auto` picks `publisher` if `C:\NVDARemoteAudioServer\NVDARemoteAudioServer.exe` or `%LOCALAPPDATA%\NVDARemoteAudioServer\NVDARemoteAudioServer.exe` exists on the machine, else `subscriber`.
 - `latencyProfile`: `auto` | `lan` | `tailscale` | `internet`. `auto` picks based on the `host` value (private IP → LAN, 100.64.0.0/10 or `*.ts.net` → Tailscale, else Internet).
+- `captureProcess`: empty sends system audio with NVDA excluded; otherwise it is a stable process name selected from current Windows audio sessions.
+- `outputDeviceId`: empty follows the Windows default playback device; otherwise it is an active render endpoint ID.
+- `receiveVolume`: subscriber gain from 0 through 200 percent.
 
 - `announceStatus`: when false, routine connect/listen/capture/stopped messages are kept quiet. Errors and explicit commands such as status still speak.
 - `useFec`: when true, the helper enables Opus in-band packet-loss recovery. Turning it off appends `--disable-fec` for advanced low-overhead LAN testing.
@@ -47,13 +53,17 @@ The plugin builds a command line with `subprocess.Popen` and reads its stdout (t
 
 ```
 NVDARemoteAudioHelper.exe --role subscriber --host <host> --port <port> --key <key> \
-  --opus-frame-ms <n> --prebuffer-ms <n> --output-latency-ms <n> --buffer-ms <n>
+  --opus-frame-ms <n> --prebuffer-ms <n> --output-latency-ms <n> --buffer-ms <n> \
+  --output-device-id <id> --receive-volume <percent>
 
 NVDARemoteAudioHelper.exe --role publisher --host <host> --port <port> --key <key> \
   --opus-frame-ms <n> --exclude-pid <NVDA pid> --bitrate <bps>
+
+NVDARemoteAudioHelper.exe --role publisher --host <host> --port <port> --key <key> \
+  --opus-frame-ms <n> --include-process-name <name> --bitrate <bps>
 ```
 
-`--exclude-pid` is set to NVDA's own PID (`os.getpid()` from inside the plugin), which is what makes WASAPI drop NVDA's audio from the captured stream. When `useFec` is false, the plugin adds `--disable-fec` to either role.
+`--exclude-pid` is set to NVDA's own PID (`os.getpid()` from inside the plugin), which is what makes WASAPI drop NVDA's audio from the system stream. A configured application replaces it with `--include-process-name`; the helper resolves that stable name through current Windows audio sessions. When `useFec` is false, the plugin adds `--disable-fec` to either role.
 
 ## Build a `.nvda-addon`
 

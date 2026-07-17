@@ -15,6 +15,16 @@ internal static class Program
 				Console.WriteLine(HelperOptions.Usage);
 				return 0;
 			}
+			if (options.ListAudioApps)
+			{
+				AudioDeviceCatalog.WriteAudioApps();
+				return 0;
+			}
+			if (options.ListOutputDevices)
+			{
+				AudioDeviceCatalog.WriteOutputDevices();
+				return 0;
+			}
 
 			using var timerResolution = new SystemTimerResolution();
 			JsonLog.Write("status", $"Starting {options.Role} connection to {options.Host}:{options.Port}.");
@@ -46,7 +56,16 @@ internal static class Program
 				}
 				else
 				{
-					await AudioPublisher.RunCaptureAsync(session, options.ExcludePid, options.Bitrate, options.OpusFrameMs, options.OpusFec, cts.Token);
+					var targetPid = options.ExcludePid;
+					var includeTargetTree = false;
+					var captureLabel = "System audio (NVDA excluded)";
+					if (!string.IsNullOrWhiteSpace(options.CaptureProcessName))
+					{
+						targetPid = AudioDeviceCatalog.FindAudioAppPid(options.CaptureProcessName);
+						includeTargetTree = true;
+						captureLabel = options.CaptureProcessName;
+					}
+					await AudioPublisher.RunCaptureAsync(session, targetPid, includeTargetTree, captureLabel, options.Bitrate, options.OpusFrameMs, options.OpusFec, cts.Token);
 				}
 			}
 			else
@@ -57,6 +76,8 @@ internal static class Program
 					options.OutputLatencyMs,
 					options.PlaybackBufferMs,
 					options.OpusFrameMs,
+					options.OutputDeviceId,
+					options.ReceiveVolume,
 					cts.Token);
 			}
 

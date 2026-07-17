@@ -8,8 +8,9 @@ NVDA add-on that streams system audio between two Windows machines, using [NVDAR
 
 ## Features
 
-- Sends or receives system audio between two Windows machines — music, games, Discord, anything on the default output device except NVDA's own speech.
+- Sends or receives audio between two Windows machines — either all system audio except NVDA, or one selected application.
 - Excludes NVDA's own audio at the OS level (WASAPI process-loopback), so it can never leak into the stream.
+- Lets the receiver choose any active Windows playback device and set receive volume from 0 to 200 percent.
 - Auto-detects role on startup: sends if the audio server is installed on this machine, receives otherwise. Override it if you want.
 - Auto-picks a latency profile (LAN, Tailscale, Internet) from the server address you set, each tuned with its own prebuffer and buffer cap.
 - One-click install, update, repair, and removal of the relay server (NVDARemoteAudioServer), including firewall rules.
@@ -26,6 +27,8 @@ NVDA add-on that streams system audio between two Windows machines, using [NVDAR
    - **Server host** — IP or hostname of the sending machine.
    - **Audio port** — 6838. Don't change it unless you also changed it on the server.
    - **Session key / room name** — same string on both sides. Required, no default. **This is a room name, not a password.**
+   - **Audio to send** — all system audio except NVDA, or one application that currently has a Windows audio session.
+   - **Receive through / Receive volume** — choose the receiver's playback endpoint and level. These settings do not affect the sending machine.
 5. Restart NVDA, or just pick `Receive remote audio` / `Send this computer's audio` from the Tools menu right now. Picking `Send` when the server isn't installed offers to install it on the spot.
 
 ## Required system
@@ -45,10 +48,13 @@ Settings that matter:
 - **Verbose logging** — off by default. Turn on when you need helper timing details in `nvda.log` for a bug report, not for normal use.
 - **Latency profile** — auto-detected from server host (see table below). Override it if the auto-pick guesses wrong for your network.
 - **Startup action** — auto-detected: publisher if the audio server is installed on this machine, subscriber otherwise. Override it if you want a fixed role or no auto-connect at all.
+- **Audio to send** — defaults to system audio with NVDA excluded. To isolate one application, start it and make it create an audio session before opening settings. Reconnect after the selected application restarts so its new process is captured.
+- **Receive through** — follows the Windows default by default, or can stay pinned to a specific active playback device.
+- **Receive volume** — 100 percent is unchanged, 0 is silent, and values up to 200 percent add gain with clipping protection.
 
 ## How it works
 
-Publisher side opens a [WASAPI process-loopback](https://learn.microsoft.com/en-us/windows/win32/api/audioclientactivationparams/ns-audioclientactivationparams-audioclient_process_loopback_params) capture with `PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE` against `nvda.exe`'s own PID. NVDA's speech and tones never get captured, period. Everything else on the default render device gets Opus-encoded and sent over UDP.
+Publisher side opens a [WASAPI process-loopback](https://learn.microsoft.com/en-us/windows/win32/api/audioclientactivationparams/ns-audioclientactivationparams-audioclient_process_loopback_params) capture. System mode uses `PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE` against `nvda.exe`, so NVDA speech and tones never get captured. Application mode uses `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE` against the selected app's current audio-session process. The resulting stream is Opus-encoded and sent over UDP.
 
 Wire format is 48 kHz stereo Opus over UDP. LAN uses 5 ms Opus packets; Tailscale and Internet profiles use 10 ms packets. FEC, packet-loss concealment, a low-latency WASAPI event-sync output path, and drift-corrected playout buffering are all always active on the receiving end.
 

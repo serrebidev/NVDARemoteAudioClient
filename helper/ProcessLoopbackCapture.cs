@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using System.Diagnostics;
 using Microsoft.Win32.SafeHandles;
 
 namespace NVDARemoteAudioHelper;
@@ -11,13 +12,17 @@ internal sealed class ProcessLoopbackCapture
 	private const int Channels = 2;
 	private const int BitsPerSample = 16;
 	private const string VirtualAudioDeviceProcessLoopback = @"VAD\Process_Loopback";
-	private readonly int _excludePid;
+	private readonly int _targetPid;
+	private readonly ProcessLoopbackMode _loopbackMode;
 	private readonly short[] _frameBuffer;
 	private int _frameOffset;
 
-	public ProcessLoopbackCapture(int excludePid, int frameSamplesPerChannel)
+	public ProcessLoopbackCapture(int targetPid, bool includeTargetTree, int frameSamplesPerChannel)
 	{
-		_excludePid = excludePid;
+		_targetPid = targetPid;
+		_loopbackMode = includeTargetTree
+			? ProcessLoopbackMode.IncludeTargetProcessTree
+			: ProcessLoopbackMode.ExcludeTargetProcessTree;
 		_frameBuffer = new short[Math.Clamp(frameSamplesPerChannel, 120, 960) * Channels];
 	}
 
@@ -26,10 +31,13 @@ internal sealed class ProcessLoopbackCapture
 		IAudioClient? audioClient = null;
 		IAudioCaptureClient? captureClient = null;
 		using var sampleReady = new AutoResetEvent(false);
+		using var targetProcess = _loopbackMode == ProcessLoopbackMode.IncludeTargetProcessTree
+			? Process.GetProcessById(_targetPid)
+			: null;
 
 		try
 		{
-			audioClient = await ActivateAudioClientAsync(_excludePid, cancellationToken);
+			audioClient = await ActivateAudioClientAsync(_targetPid, _loopbackMode, cancellationToken);
 			InitializeAudioClient(audioClient, sampleReady.SafeWaitHandle);
 			captureClient = GetCaptureClient(audioClient);
 			using var threadBoost = new WindowsAudioThreadBoost("Capture");
@@ -44,6 +52,10 @@ internal sealed class ProcessLoopbackCapture
 			var waitHandles = new WaitHandle[] { sampleReady, cancellationToken.WaitHandle };
 			while (!cancellationToken.IsCancellationRequested)
 			{
+				if (targetProcess is not null && targetProcess.HasExited)
+				{
+					throw new InvalidOperationException("The selected audio application exited. Reconnect after it restarts.");
+				}
 				var waitResult = WaitHandle.WaitAny(waitHandles, 1000);
 				if (waitResult == 0)
 				{
@@ -71,15 +83,15 @@ internal sealed class ProcessLoopbackCapture
 		}
 	}
 
-	private static async Task<IAudioClient> ActivateAudioClientAsync(int excludePid, CancellationToken cancellationToken)
+	private static async Task<IAudioClient> ActivateAudioClientAsync(int targetPid, ProcessLoopbackMode loopbackMode, CancellationToken cancellationToken)
 	{
 		var activation = new AudioClientActivationParams
 		{
 			ActivationType = AudioClientActivationType.ProcessLoopback,
 			ProcessLoopbackParams = new AudioClientProcessLoopbackParams
 			{
-				TargetProcessId = (uint)excludePid,
-				ProcessLoopbackMode = ProcessLoopbackMode.ExcludeTargetProcessTree,
+				TargetProcessId = (uint)targetPid,
+				ProcessLoopbackMode = loopbackMode,
 			},
 		};
 

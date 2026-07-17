@@ -32,6 +32,9 @@ DEFAULT_CONFIG = {
 	"port": 6838,
 	"key": "",
 	"bitrate": 128000,
+	"captureProcess": "",
+	"outputDeviceId": "",
+	"receiveVolume": 100,
 	"startupMode": "auto",
 	"latencyProfile": "auto",
 	"announceStatus": True,
@@ -122,6 +125,9 @@ def _normalizeConfig(config):
 		"port": clampInt(config.get("port"), DEFAULT_CONFIG["port"], 1, 65535),
 		"key": str(config.get("key") if config.get("key") is not None else DEFAULT_CONFIG["key"]),
 		"bitrate": clampInt(config.get("bitrate"), DEFAULT_CONFIG["bitrate"], 16000, 510000),
+		"captureProcess": str(config.get("captureProcess") or "").strip().lower(),
+		"outputDeviceId": str(config.get("outputDeviceId") or "").strip(),
+		"receiveVolume": clampInt(config.get("receiveVolume"), DEFAULT_CONFIG["receiveVolume"], 0, 200),
 		"startupMode": config.get("startupMode") if config.get("startupMode") in STARTUP_MODES else DEFAULT_CONFIG["startupMode"],
 		"latencyProfile": config.get("latencyProfile") if config.get("latencyProfile") in LATENCY_PROFILES else DEFAULT_CONFIG["latencyProfile"],
 		"announceStatus": asBool(config.get("announceStatus"), DEFAULT_CONFIG["announceStatus"]),
@@ -184,6 +190,50 @@ def _latencySettings(config):
 	return LATENCY_SETTINGS[_resolveLatencyProfile(config)]
 
 
+def _queryHelperCatalog(flag, eventName, collectionName):
+	"""Return a live helper catalog, or an empty list if discovery is unavailable."""
+	if not os.path.exists(HELPER_PATH):
+		return []
+	try:
+		startupinfo = subprocess.STARTUPINFO()
+		startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+		completed = subprocess.run(
+			[HELPER_PATH, flag],
+			stdin=subprocess.DEVNULL,
+			stdout=subprocess.PIPE,
+			stderr=subprocess.STDOUT,
+			text=True,
+			encoding="utf-8",
+			errors="replace",
+			timeout=5,
+			creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+			startupinfo=startupinfo,
+			check=False,
+		)
+		for line in completed.stdout.splitlines():
+			try:
+				payload = json.loads(line)
+			except Exception:
+				continue
+			if payload.get("event") == eventName and isinstance(payload.get(collectionName), list):
+				return payload[collectionName]
+		if completed.returncode:
+			log.warning("Remote audio helper catalog %s failed: %s", flag, completed.stdout.strip())
+	except Exception:
+		log.debug("Remote audio helper catalog %s failed", flag, exc_info=True)
+	return []
+
+
+def _audioApps():
+	apps = _queryHelperCatalog("--list-audio-apps", "audio_apps", "apps")
+	return [app for app in apps if isinstance(app, dict) and app.get("ProcessName")]
+
+
+def _outputDevices():
+	devices = _queryHelperCatalog("--list-output-devices", "output_devices", "devices")
+	return [device for device in devices if isinstance(device, dict) and device.get("Id")]
+
+
 class AudioClientProcess:
 	def __init__(self, exitCallback=None):
 		self._process = None
@@ -238,16 +288,22 @@ class AudioClientProcess:
 		if not config.get("useFec", DEFAULT_CONFIG["useFec"]):
 			args.append("--disable-fec")
 		if role == "publisher":
-			args.extend([
-				"--exclude-pid", str(os.getpid()),
-				"--bitrate", str(config["bitrate"]),
-			])
+			captureProcess = str(config.get("captureProcess") or "").strip()
+			if captureProcess:
+				args.extend(["--include-process-name", captureProcess])
+			else:
+				args.extend(["--exclude-pid", str(os.getpid())])
+			args.extend(["--bitrate", str(config["bitrate"])])
 		else:
 			args.extend([
 				"--prebuffer-ms", str(latency["prebufferMs"]),
 				"--output-latency-ms", str(latency["outputLatencyMs"]),
 				"--buffer-ms", str(latency["bufferMs"]),
+				"--receive-volume", str(config.get("receiveVolume", DEFAULT_CONFIG["receiveVolume"])),
 			])
+			outputDeviceId = str(config.get("outputDeviceId") or "").strip()
+			if outputDeviceId:
+				args.extend(["--output-device-id", outputDeviceId])
 
 		try:
 			startupinfo = subprocess.STARTUPINFO()
@@ -435,6 +491,44 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 			max=510000,
 			initial=int(self._config["bitrate"]),
 		)
+		self._captureProcessValues = [""]
+		captureChoices = [_('System audio (NVDA excluded)')]
+		configuredCapture = self._config["captureProcess"]
+		for app in _audioApps():
+			processName = str(app.get("ProcessName") or "").strip().lower()
+			if not processName or processName in self._captureProcessValues:
+				continue
+			displayName = str(app.get("DisplayName") or processName)
+			state = _("playing") if app.get("Playing") else _("idle")
+			captureChoices.append(_("{display} ({process}, {state})").format(display=displayName, process=processName, state=state))
+			self._captureProcessValues.append(processName)
+		if configuredCapture and configuredCapture not in self._captureProcessValues:
+			captureChoices.append(_("{process} (not currently available)").format(process=configuredCapture))
+			self._captureProcessValues.append(configuredCapture)
+		self.captureChoice = helper.addLabeledControl(_("Audio to send:"), wx.Choice, choices=captureChoices)
+		self.captureChoice.SetSelection(self._captureProcessValues.index(configuredCapture) if configuredCapture in self._captureProcessValues else 0)
+
+		self._outputDeviceValues = [""]
+		outputChoices = [_('Windows default playback device')]
+		configuredOutput = self._config["outputDeviceId"]
+		for device in _outputDevices():
+			deviceId = str(device.get("Id") or "").strip()
+			if not deviceId or deviceId in self._outputDeviceValues:
+				continue
+			outputChoices.append(str(device.get("Name") or deviceId))
+			self._outputDeviceValues.append(deviceId)
+		if configuredOutput and configuredOutput not in self._outputDeviceValues:
+			outputChoices.append(_("Saved playback device (not currently available)"))
+			self._outputDeviceValues.append(configuredOutput)
+		self.outputDeviceChoice = helper.addLabeledControl(_("Receive through:"), wx.Choice, choices=outputChoices)
+		self.outputDeviceChoice.SetSelection(self._outputDeviceValues.index(configuredOutput) if configuredOutput in self._outputDeviceValues else 0)
+		self.receiveVolumeCtrl = helper.addLabeledControl(
+			_("Receive volume (percent):"),
+			wx.SpinCtrl,
+			min=0,
+			max=200,
+			initial=int(self._config["receiveVolume"]),
+		)
 		self.latencyChoice = helper.addLabeledControl(
 			_("Latency profile:"),
 			wx.Choice,
@@ -477,6 +571,9 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 			"port": self.portCtrl.GetValue(),
 			"key": self.keyCtrl.GetValue(),
 			"bitrate": self.bitrateCtrl.GetValue(),
+			"captureProcess": self._captureProcessValues[self.captureChoice.GetSelection()],
+			"outputDeviceId": self._outputDeviceValues[self.outputDeviceChoice.GetSelection()],
+			"receiveVolume": self.receiveVolumeCtrl.GetValue(),
 			"latencyProfile": LATENCY_PROFILES[self.latencyChoice.GetSelection()],
 			"startupMode": STARTUP_MODES[self.startupChoice.GetSelection()],
 			"announceStatus": self.announceStatusCheck.GetValue(),
@@ -770,6 +867,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			"Configured port: {0}".format(config.get("port")),
 			"Startup action: {0} (resolved: {1})".format(config.get("startupMode"), _resolveStartupMode(config)),
 			"Latency profile: {0} (resolved: {1}; {2})".format(config.get("latencyProfile"), latencyProfile, latency),
+			"Capture source: {0}".format(config.get("captureProcess") or "system audio (NVDA excluded)"),
+			"Playback device ID: {0}".format(config.get("outputDeviceId") or "Windows default"),
+			"Receive volume: {0}%".format(config.get("receiveVolume")),
 			"Helper running: {0}".format(client.get("running")),
 			"Helper role: {0}".format(client.get("role")),
 			"Helper runtime: {0}".format(runtime),

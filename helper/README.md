@@ -4,8 +4,8 @@ Standalone Windows console EXE that does the audio work for the [NVDA Remote Aud
 
 ## What it does
 
-- **Publisher**: WASAPI process-loopback capture on the default render endpoint, excluding the NVDA process tree, → Opus encode (48 kHz stereo, 5/10/20 ms packets with optional FEC) → UDP to the server.
-- **Subscriber**: UDP from the server → Opus decode with FEC recovery / packet-loss concealment → drift-corrected ring buffer → WASAPI event-sync playback.
+- **Publisher**: WASAPI process-loopback capture, either excluding the NVDA process tree from system audio or including one selected application's process tree, → Opus encode (48 kHz stereo, 5/10/20 ms packets with optional FEC) → UDP to the server.
+- **Subscriber**: UDP from the server → Opus decode with FEC recovery / packet-loss concealment → drift-corrected ring buffer → selectable WASAPI event-sync playback endpoint and receive gain.
 - **Control plane**: TCP JSON handshake on the same port, periodic heartbeats, UDP session registration.
 
 The helper logs structured JSON events to stdout, one per line. The add-on parses them to drive NVDA messages.
@@ -46,6 +46,9 @@ NVDARemoteAudioHelper.exe --role publisher --host 127.0.0.1 --port 6838 --key MY
 
 # Send real system audio, excluding NVDA's process tree
 NVDARemoteAudioHelper.exe --role publisher --host 127.0.0.1 --port 6838 --key MYKEY --exclude-pid <NVDA_PID> --bitrate 128000 --opus-frame-ms 5
+
+# Send one application (stable process name, without .exe)
+NVDARemoteAudioHelper.exe --role publisher --host 127.0.0.1 --port 6838 --key MYKEY --include-process-name foobar2000 --bitrate 128000 --opus-frame-ms 5
 ```
 
 Packet size and subscriber-side jitter buffering are tunable from CLI (the add-on passes these based on the latency profile):
@@ -56,6 +59,10 @@ Packet size and subscriber-side jitter buffering are tunable from CLI (the add-o
 --prebuffer-ms <ms>       Startup buffer before playback begins. Default 90.
 --output-latency-ms <ms>  WASAPI event-sync output latency. Default 80.
 --buffer-ms <ms>          Max playback buffer cap. Default 450.
+--output-device-id <id>   Active render endpoint ID; omitted follows the Windows default.
+--receive-volume <pct>    Subscriber gain from 0 to 200 percent. Default 100.
+--list-audio-apps         Emit current audio-session applications as JSON and exit.
+--list-output-devices     Emit active render endpoints as JSON and exit.
 ```
 
 ## Files
@@ -66,7 +73,8 @@ Packet size and subscriber-side jitter buffering are tunable from CLI (the add-o
 | `HelperOptions.cs` | CLI parsing. |
 | `RemoteAudioProtocol.cs` | TCP handshake + heartbeats, UDP packet framing (`RAS1` magic, 22-byte header, 16-byte session id, sequence/timestamp), session registration. |
 | `AudioPublisher.cs` | Opus encode loop, configurable 5/10/20 ms packets, test-tone generator. |
-| `ProcessLoopbackCapture.cs` | `ActivateAudioInterfaceAsync` against `VAD\Process_Loopback`, `IAudioClient`/`IAudioCaptureClient` interop, exclude-PID wiring. |
+| `ProcessLoopbackCapture.cs` | `ActivateAudioInterfaceAsync` against `VAD\Process_Loopback`, `IAudioClient`/`IAudioCaptureClient` interop, include/exclude process-tree wiring. |
+| `AudioDeviceCatalog.cs` | Live Windows audio-session application and render-endpoint discovery. |
 | `AudioSubscriber.cs` | Opus decode, in-band FEC recovery, PLC, diagnostic counters. |
 | `PlaybackSink.cs` | WASAPI event-sync output, float ring buffer, prebuffer, underrun fade, trim, and continuous drift resampling. |
 | `NetworkPriority.cs` | Best-effort qWAVE voice-priority attachment for the UDP socket. |

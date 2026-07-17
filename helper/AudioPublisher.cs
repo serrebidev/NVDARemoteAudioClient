@@ -11,7 +11,9 @@ internal static class AudioPublisher
 
 	public static async Task RunCaptureAsync(
 		RemoteAudioSession session,
-		int excludePid,
+		int targetPid,
+		bool includeTargetTree,
+		string captureLabel,
 		int bitrate,
 		int opusFrameMilliseconds,
 		bool useInbandFec,
@@ -19,9 +21,10 @@ internal static class AudioPublisher
 	{
 		var packetSamplesPerChannel = FrameSamplesPerChannel(opusFrameMilliseconds);
 		var channelCapacity = Math.Max(2, 40 / opusFrameMilliseconds);
-		JsonLog.Write("status", "Starting system capture with NVDA audio excluded.", new Dictionary<string, object?>
+		JsonLog.Write("status", includeTargetTree ? "Starting application capture." : "Starting system capture with NVDA audio excluded.", new Dictionary<string, object?>
 		{
-			["excluded_pid"] = excludePid,
+			[includeTargetTree ? "included_pid" : "excluded_pid"] = targetPid,
+			["capture_source"] = captureLabel,
 			["bitrate"] = bitrate,
 			["opus_frame_ms"] = opusFrameMilliseconds,
 			["opus_fec"] = useInbandFec,
@@ -31,7 +34,7 @@ internal static class AudioPublisher
 		using var queue = new AudioFrameQueue(channelCapacity);
 
 		using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-		var capture = new ProcessLoopbackCapture(excludePid, packetSamplesPerChannel);
+		var capture = new ProcessLoopbackCapture(targetPid, includeTargetTree, packetSamplesPerChannel);
 		var captureTask = capture.RunAsync(queue, linkedCts.Token);
 		var encodeTask = EncodeAndSendLoopAsync(queue, session, bitrate, opusFrameMilliseconds, useInbandFec, linkedCts.Token);
 

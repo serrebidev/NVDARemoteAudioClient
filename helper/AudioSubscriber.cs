@@ -15,9 +15,11 @@ internal static class AudioSubscriber
 		int outputLatencyMs,
 		int playbackBufferMs,
 		int opusFrameMilliseconds,
+		string outputDeviceId,
+		int receiveVolume,
 		CancellationToken cancellationToken)
 	{
-		using var playback = new PlaybackSink(SampleRate, Channels, prebufferMs, outputLatencyMs, playbackBufferMs);
+		using var playback = new PlaybackSink(SampleRate, Channels, prebufferMs, outputLatencyMs, playbackBufferMs, outputDeviceId, receiveVolume);
 		var decoder = OpusCodecFactory.CreateDecoder(SampleRate, Channels, TextWriter.Null);
 		var decoded = new float[MaxDecodedSamplesPerChannel * Channels];
 		var lastSequence = ulong.MaxValue;
@@ -37,6 +39,8 @@ internal static class AudioSubscriber
 			["output_latency_ms"] = outputLatencyMs,
 			["buffer_ms"] = playbackBufferMs,
 			["opus_frame_ms"] = opusFrameMilliseconds,
+			["output_device_id"] = outputDeviceId,
+			["receive_volume"] = receiveVolume,
 		});
 
 		try

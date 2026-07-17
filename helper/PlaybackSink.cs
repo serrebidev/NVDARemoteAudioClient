@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using NAudio.CoreAudioApi;
 using NAudio.Dsp;
 using NAudio.Wave;
 
@@ -8,27 +9,55 @@ internal sealed class PlaybackSink : IDisposable
 {
 	private readonly LowLatencyFloatProvider _provider;
 	private readonly IWavePlayer _output;
+	private readonly MMDeviceEnumerator? _deviceEnumerator;
+	private readonly MMDevice? _selectedDevice;
 	private bool _playing;
 
-	public PlaybackSink(int sampleRate, int channels, int prebufferMilliseconds, int outputLatencyMilliseconds, int bufferMilliseconds)
+	public PlaybackSink(
+		int sampleRate,
+		int channels,
+		int prebufferMilliseconds,
+		int outputLatencyMilliseconds,
+		int bufferMilliseconds,
+		string outputDeviceId,
+		int receiveVolume)
 	{
 		var targetLatencyMs = Math.Clamp(prebufferMilliseconds, 5, 1000);
 		var capacityMs = Math.Clamp(Math.Max(bufferMilliseconds, targetLatencyMs * 4), 40, 3000);
-		_provider = new LowLatencyFloatProvider(sampleRate, channels, targetLatencyMs, capacityMs);
+		_provider = new LowLatencyFloatProvider(sampleRate, channels, targetLatencyMs, capacityMs, receiveVolume);
 
 		var desiredLatency = Math.Clamp(outputLatencyMilliseconds, 5, 1000);
+		WasapiOut? wasapi = null;
 		try
 		{
-			var wasapi = new WasapiOut(NAudio.CoreAudioApi.AudioClientShareMode.Shared, useEventSync: true, latency: desiredLatency);
+			if (string.IsNullOrWhiteSpace(outputDeviceId))
+			{
+				wasapi = new WasapiOut(NAudio.CoreAudioApi.AudioClientShareMode.Shared, useEventSync: true, latency: desiredLatency);
+			}
+			else
+			{
+				_deviceEnumerator = new MMDeviceEnumerator();
+				_selectedDevice = _deviceEnumerator.GetDevice(outputDeviceId);
+				wasapi = new WasapiOut(_selectedDevice, NAudio.CoreAudioApi.AudioClientShareMode.Shared, useEventSync: true, latency: desiredLatency);
+			}
 			wasapi.Init(_provider);
 			_output = wasapi;
 			JsonLog.Write("status", "WASAPI event-sync playback initialized.", new Dictionary<string, object?>
 			{
 				["output_latency_ms"] = desiredLatency,
+				["output_device"] = _selectedDevice?.FriendlyName ?? "Windows default",
+				["receive_volume"] = receiveVolume,
 			});
 		}
 		catch (Exception ex)
 		{
+			wasapi?.Dispose();
+			if (!string.IsNullOrWhiteSpace(outputDeviceId))
+			{
+				_selectedDevice?.Dispose();
+				_deviceEnumerator?.Dispose();
+				throw new InvalidOperationException("The selected playback device is unavailable or could not be opened. Choose another device in NVDA Remote Audio settings.", ex);
+			}
 			JsonLog.Write("status", "WASAPI playback initialization failed; falling back to WaveOutEvent.", new Dictionary<string, object?>
 			{
 				["type"] = ex.GetType().Name,
@@ -73,6 +102,8 @@ internal sealed class PlaybackSink : IDisposable
 	{
 		_output.Stop();
 		_output.Dispose();
+		_selectedDevice?.Dispose();
+		_deviceEnumerator?.Dispose();
 	}
 
 	private sealed class LowLatencyFloatProvider : IWaveProvider
@@ -119,7 +150,9 @@ internal sealed class PlaybackSink : IDisposable
 		private float[] _resamplerOutputScratch = new float[2048];
 		private int _lastInputFramesAvailable;
 
-		public LowLatencyFloatProvider(int sampleRate, int channels, int targetLatencyMs, int capacityMs)
+		private readonly float _volume;
+
+		public LowLatencyFloatProvider(int sampleRate, int channels, int targetLatencyMs, int capacityMs, int receiveVolume)
 		{
 			_sampleRate = sampleRate;
 			_channels = channels;
@@ -132,6 +165,7 @@ internal sealed class PlaybackSink : IDisposable
 			_driftResampler.SetMode(interp: true, filtercnt: 0, sinc: false);
 			_driftResampler.SetFeedMode(false);
 			_driftResampler.SetRates(sampleRate, sampleRate);
+			_volume = Math.Clamp(receiveVolume, 0, 200) / 100f;
 		}
 
 		public WaveFormat WaveFormat { get; }
@@ -197,6 +231,13 @@ internal sealed class PlaybackSink : IDisposable
 			TrimBacklogIfNeeded();
 			UpdateDriftResamplerRateIfDue(outFrames);
 			ReadThroughResampler(output, outFrames);
+			if (_volume != 1f)
+			{
+				for (var index = 0; index < output.Length; index++)
+				{
+					output[index] = Math.Clamp(output[index] * _volume, -1f, 1f);
+				}
+			}
 
 			return count;
 		}
