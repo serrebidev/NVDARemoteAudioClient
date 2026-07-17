@@ -25,7 +25,6 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = $PSScriptRoot
 $helperExe = Join-Path $repoRoot 'helper\bin\Release\net9.0-windows\NVDARemoteAudioHelper.exe'
 $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("remote-audio-integration-{0}" -f [guid]::NewGuid())
-$serverLog = Join-Path $testRoot 'server.log'
 
 function Start-RedirectedProcess {
 	param(
@@ -100,7 +99,8 @@ function Stop-HelperProcess {
 function Invoke-StreamCase {
 	param(
 		[Parameter(Mandatory = $true)] [string] $Codec,
-		[Parameter(Mandatory = $true)] [string] $Key
+		[Parameter(Mandatory = $true)] [string] $Key,
+		[int] $DurationSeconds = 3
 	)
 	$recordFolder = Join-Path $testRoot $Codec
 	Write-Host "Starting encrypted $Codec relay stream..."
@@ -137,7 +137,7 @@ function Invoke-StreamCase {
 	)) -Environment $environment
 
 	try {
-		Start-Sleep -Seconds 3
+		Start-Sleep -Seconds $DurationSeconds
 	}
 	finally {
 		Stop-HelperProcess -Process $publisher
@@ -151,8 +151,8 @@ function Invoke-StreamCase {
 	if ($publisherOutput -notmatch '"event":"connected"' -or $subscriberOutput -notmatch '"event":"connected"') {
 		throw "$Codec stream did not connect both clients"
 	}
-	if ($subscriberOutput -match '"event":"error"') {
-		throw "$Codec subscriber reported an error: $subscriberOutput"
+	if ($publisherOutput -match '"event":"error"' -or $subscriberOutput -match '"event":"error"') {
+		throw "$Codec stream reported an error. Publisher: $publisherOutput Subscriber: $subscriberOutput"
 	}
 	$recording = Get-ChildItem -LiteralPath $recordFolder -Filter '*.wav' | Select-Object -First 1
 	if ($null -eq $recording -or $recording.Length -le 44) {
@@ -203,6 +203,59 @@ function Invoke-WrongPasswordCase {
 	Write-Host 'Wrong-password rejection passed.'
 }
 
+function Start-TestRelay {
+	param([Parameter(Mandatory = $true)] [string] $LogName)
+	return Start-RedirectedProcess -FilePath $ServerExe -Arguments @(
+		"--port=$Port",
+		"--sport=$($Port + 1)",
+		"--log=$(Join-Path $testRoot $LogName)"
+	)
+}
+
+function Invoke-RelayRestartCase {
+	param([Parameter(Mandatory = $true)] [ref] $ServerProcess)
+
+	Write-Host 'Starting relay-restart recovery case...'
+	$publisher = Start-RedirectedProcess -FilePath $helperExe -Arguments @(
+		'--role', 'publisher',
+		'--host', '127.0.0.1',
+		'--port', [string] $Port,
+		'--key', 'integration-relay-restart',
+		'--codec', 'opus',
+		'--opus-frame-ms', '5',
+		'--test-tone',
+		'--bitrate', '128000'
+	)
+	try {
+		Start-Sleep -Seconds 2
+		$oldServer = $ServerProcess.Value
+		if (-not $oldServer.HasExited) {
+			$oldServer.Kill($true)
+			$oldServer.WaitForExit()
+		}
+		$oldServer.Dispose()
+		# Keep the relay down long enough for at least one reconnect attempt to fail.
+		# This verifies that recovery continues instead of exiting after one retry.
+		Start-Sleep -Seconds 8
+		$ServerProcess.Value = Start-TestRelay -LogName 'server-restarted.log'
+		Start-Sleep -Seconds 6
+		if ($ServerProcess.Value.HasExited) {
+			throw "Restarted relay exited: $(Get-CapturedProcessOutput -Process $ServerProcess.Value)"
+		}
+	}
+	finally {
+		Stop-HelperProcess -Process $publisher
+	}
+
+	$output = Get-CapturedProcessOutput -Process $publisher
+	$connectedCount = ([regex]::Matches($output, '"event":"connected"')).Count
+	$reconnectingCount = ([regex]::Matches($output, '"reconnecting":true')).Count
+	if ($publisher.ExitCode -ne 0 -or $connectedCount -lt 2 -or $reconnectingCount -lt 2) {
+		throw "Publisher did not recover after relay restart: $output"
+	}
+	Write-Host 'Relay-restart recovery passed.'
+}
+
 if (-not (Test-Path -LiteralPath $ServerExe)) {
 	throw "Relay server not found at $ServerExe"
 }
@@ -211,19 +264,18 @@ if (-not (Test-Path -LiteralPath $helperExe)) {
 }
 
 New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
-$server = Start-RedirectedProcess -FilePath $ServerExe -Arguments @(
-	"--port=$Port",
-	"--sport=$($Port + 1)",
-	"--log=$serverLog"
-)
+$server = Start-TestRelay -LogName 'server.log'
 try {
 	Start-Sleep -Milliseconds 600
 	if ($server.HasExited) {
 		throw "Relay server exited during startup: $(Get-CapturedProcessOutput -Process $server)"
 	}
-	Invoke-StreamCase -Codec 'opus' -Key 'integration-opus'
+	# The relay's control idle timeout is 15 seconds. Keeping one real stream alive
+	# past that boundary proves TCP heartbeat traffic is actually reaching it.
+	Invoke-StreamCase -Codec 'opus' -Key 'integration-opus' -DurationSeconds 18
 	Invoke-StreamCase -Codec 'pcm' -Key 'integration-pcm'
 	Invoke-WrongPasswordCase
+	Invoke-RelayRestartCase -ServerProcess ([ref] $server)
 	Write-Host 'All encrypted relay integration tests passed.'
 }
 finally {

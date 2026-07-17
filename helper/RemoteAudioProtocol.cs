@@ -43,6 +43,7 @@ internal sealed class RemoteAudioSession : IAsyncDisposable
 	public int MaxPayloadBytes { get; }
 	public ConnectionRole Role { get; }
 	public string SessionIdHex { get; }
+	public CancellationToken LifetimeToken => _lifetimeCts.Token;
 
 	private RemoteAudioSession(
 		TcpClient tcp,
@@ -78,62 +79,85 @@ internal sealed class RemoteAudioSession : IAsyncDisposable
 		int port,
 		string key,
 		ConnectionRole role,
-		CancellationToken cancellationToken)
+		CancellationToken connectionCancellationToken,
+		CancellationToken lifetimeToken)
 	{
 		var tcp = new TcpClient { NoDelay = true };
-		await tcp.ConnectAsync(host, port, cancellationToken);
-
-		var stream = tcp.GetStream();
-		var writer = new StreamWriter(stream, WireEncoding, leaveOpen: true)
+		UdpClient? udp = null;
+		NetworkPriority? networkPriority = null;
+		RemoteAudioSession? session = null;
+		try
 		{
-			AutoFlush = true,
-			NewLine = "\n",
-		};
+			await tcp.ConnectAsync(host, port, connectionCancellationToken);
 
-		var roleText = role == ConnectionRole.Publisher ? "publisher" : "subscriber";
-		await writer.WriteLineAsync(JsonSerializer.Serialize(new { role = roleText, key }));
+			var stream = tcp.GetStream();
+			var writer = new StreamWriter(stream, WireEncoding, leaveOpen: true)
+			{
+				AutoFlush = true,
+				NewLine = "\n",
+			};
 
-		// Bounded line read so a hostile server cannot stream unlimited bytes without a newline
-		// and exhaust our memory.
-		var responseLine = await ReadLineBoundedAsync(stream, HandshakeMaxBytes, cancellationToken);
-		var response = JsonSerializer.Deserialize<HandshakeResponse>(responseLine)
-			?? throw new IOException("The audio server returned an empty handshake response.");
+			var roleText = role == ConnectionRole.Publisher ? "publisher" : "subscriber";
+			await writer.WriteLineAsync(JsonSerializer.Serialize(new { role = roleText, key }));
 
-		if (!string.Equals(response.Status, "ok", StringComparison.OrdinalIgnoreCase))
-		{
-			throw new IOException(response.Message ?? "The audio server rejected the handshake.");
+			// Bounded line read so a hostile server cannot stream unlimited bytes without a newline
+			// and exhaust our memory.
+			var responseLine = await ReadLineBoundedAsync(stream, HandshakeMaxBytes, connectionCancellationToken);
+			var response = JsonSerializer.Deserialize<HandshakeResponse>(responseLine)
+				?? throw new IOException("The audio server returned an empty handshake response.");
+
+			if (!string.Equals(response.Status, "ok", StringComparison.OrdinalIgnoreCase))
+			{
+				throw new IOException(response.Message ?? "The audio server rejected the handshake.");
+			}
+
+			var sessionId = ParseSessionId(response.SessionId);
+			var udpPort = response.UdpPort > 0 && response.UdpPort <= 65535 ? response.UdpPort : port;
+			var rawMaxPayload = response.UdpAudioPayloadMaxBytes > 0 ? response.UdpAudioPayloadMaxBytes : 1200;
+			// Cap the server's per-packet limit to a single MTU. A hostile/buggy server could otherwise force
+			// large allocations on every send.
+			var maxPayload = Math.Clamp(rawMaxPayload, 64, 1500);
+			var rawTcpHeartbeatMs = response.TcpHeartbeatIntervalMs > 0 ? response.TcpHeartbeatIntervalMs : 5000;
+			// Floor the TCP heartbeat interval. A server returning 0/1 would spin our heartbeat loop tight.
+			var tcpHeartbeatMs = Math.Max(500, rawTcpHeartbeatMs);
+			var udpTimeoutMs = response.UdpSessionTimeoutMs > 0 ? response.UdpSessionTimeoutMs : 15000;
+
+			udp = new UdpClient();
+			udp.Client.SendBufferSize = 256 * 1024;
+			udp.Client.ReceiveBufferSize = 512 * 1024;
+			udp.Connect(host, udpPort);
+			networkPriority = new NetworkPriority();
+			networkPriority.Attach(udp.Client, message => JsonLog.Write("diagnostic", message));
+
+			session = new RemoteAudioSession(tcp, writer, udp, sessionId, maxPayload, tcpHeartbeatMs, udpTimeoutMs, networkPriority, role, lifetimeToken);
+			await session.RegisterUdpAsync(connectionCancellationToken);
+
+			JsonLog.Write("connected", $"Connected as {roleText}.", new Dictionary<string, object?>
+			{
+				["role"] = roleText,
+				["session_id"] = session.SessionIdHex,
+				["udp_port"] = udpPort,
+				["max_payload"] = maxPayload,
+				["tcp_heartbeat_ms"] = tcpHeartbeatMs,
+				["udp_timeout_ms"] = udpTimeoutMs,
+			});
+
+			return session;
 		}
-
-		var sessionId = ParseSessionId(response.SessionId);
-		var udpPort = response.UdpPort > 0 && response.UdpPort <= 65535 ? response.UdpPort : port;
-		var rawMaxPayload = response.UdpAudioPayloadMaxBytes > 0 ? response.UdpAudioPayloadMaxBytes : 1200;
-		// Cap the server's per-packet limit to a single MTU. A hostile/buggy server could otherwise force
-		// large allocations on every send.
-		var maxPayload = Math.Clamp(rawMaxPayload, 64, 1500);
-		var rawTcpHeartbeatMs = response.TcpHeartbeatIntervalMs > 0 ? response.TcpHeartbeatIntervalMs : 5000;
-		// Floor the TCP heartbeat interval. A server returning 0/1 would spin our heartbeat loop tight.
-		var tcpHeartbeatMs = Math.Max(500, rawTcpHeartbeatMs);
-		var udpTimeoutMs = response.UdpSessionTimeoutMs > 0 ? response.UdpSessionTimeoutMs : 15000;
-
-		var udp = new UdpClient();
-		udp.Client.SendBufferSize = 256 * 1024;
-		udp.Client.ReceiveBufferSize = 512 * 1024;
-		udp.Connect(host, udpPort);
-		var networkPriority = new NetworkPriority();
-		networkPriority.Attach(udp.Client, message => JsonLog.Write("diagnostic", message));
-
-		var session = new RemoteAudioSession(tcp, writer, udp, sessionId, maxPayload, tcpHeartbeatMs, udpTimeoutMs, networkPriority, role, cancellationToken);
-		await session.RegisterUdpAsync(cancellationToken);
-
-		JsonLog.Write("connected", $"Connected as {roleText}.", new Dictionary<string, object?>
+		catch
 		{
-			["role"] = roleText,
-			["session_id"] = session.SessionIdHex,
-			["udp_port"] = udpPort,
-			["max_payload"] = maxPayload,
-		});
-
-		return session;
+			if (session is not null)
+			{
+				await session.DisposeAsync();
+			}
+			else
+			{
+				networkPriority?.Dispose();
+				udp?.Dispose();
+				tcp.Dispose();
+			}
+			throw;
+		}
 	}
 
 	public async Task SendAudioAsync(ulong sequence, ulong timestampMs, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)

@@ -6,7 +6,7 @@ Standalone Windows console EXE that does the audio work for the [NVDA Remote Aud
 
 - **Publisher**: WASAPI process-loopback capture → Opus or PCM → optional AES-256-GCM payload-v2 encryption → UDP relay.
 - **Subscriber**: UDP relay → payload authentication/decryption → Opus or PCM decode → optional WAV recording → drift-corrected buffer → volume, pan, three-band EQ, and selectable WASAPI playback.
-- **Control plane**: TCP JSON handshake on the same port, periodic heartbeats, UDP session registration.
+- **Control plane**: TCP JSON handshake on the same port, periodic heartbeats, UDP session registration, and automatic session recovery after relay restarts.
 
 The helper logs structured JSON events to stdout, one per line. The add-on parses them to drive NVDA messages.
 

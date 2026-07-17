@@ -43,7 +43,7 @@ git diff --check
 
 `run-tests.ps1` builds and publishes the helper, exercises protocol/encryption/audio-shaping self-tests, checks live audio discovery and option validation, compiles the Python modules, and validates the manifest and documentation.
 
-`integration-test.ps1` requires an installed `C:\NVDARemoteAudioServer\NVDARemoteAudioServer.exe`. It automatically relaunches under PowerShell 7 when invoked from Windows PowerShell 5.1 and uses isolated test ports. It must pass encrypted Opus, encrypted PCM, WAV recording, and wrong-password rejection.
+`integration-test.ps1` requires an installed `C:\NVDARemoteAudioServer\NVDARemoteAudioServer.exe`. It automatically relaunches under PowerShell 7 when invoked from Windows PowerShell 5.1 and uses isolated test ports. It must pass encrypted Opus beyond the relay idle timeout, encrypted PCM, WAV recording, wrong-password rejection, and recovery after a real relay process restart.
 
 `build.ps1` reruns the source checks and creates `dist\remoteAudioClient-X.Y.Z.nvda-addon`. Inspect the archive before release; its root must contain `manifest.ini`, `readme.html`, `globalPlugins/`, and `bin/`.
 
