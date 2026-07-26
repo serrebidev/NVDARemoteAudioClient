@@ -1,5 +1,13 @@
 # NVDA Remote Audio Client release notes
 
+## 0.2.2
+
+### Safe add-on reloads
+
+- Fixes NVDA terminating when Reload Add-ons is invoked from the Tools menu or its assigned keyboard gesture.
+- Removes the stale Tools-menu item after the active event returns while retaining its unsafe wx wrapper until NVDA exits.
+- Preserves normal Remote Audio timer, helper-process, settings-panel, and NVDA Remote script cleanup during reload.
+
 ## 0.2.1
 
 ### Relay restart recovery

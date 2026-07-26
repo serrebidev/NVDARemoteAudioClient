@@ -59,6 +59,10 @@ NVDA add-on side of [NVDA Remote Audio Client](../README.md). Spawns and supervi
 
 The add-on also exposes unbound NVDA Input Gestures under the `NVDA Remote Audio` category: receive, send, disconnect, reconnect, report status, and copy diagnostics. Those gestures are registered with NVDA Remote's local-script list so they still run on the machine where you press them while you are controlling another machine with F11.
 
+## Add-on reload safety
+
+Remote Audio detaches its menu references immediately during Reload Add-ons, removes the stale menu item after the active event returns, and retains the unsafe detached wx wrapper until NVDA exits. This prevents NVDA from terminating when reload is started from the Tools menu or its assigned keyboard gesture.
+
 ## How the auto-retry works
 
 If the helper exits unexpectedly (network drop, server restart, etc.) and the auto-start role is still configured, the plugin retries after 5 seconds. Manual disconnect (`Tools > NVDA Remote Audio > Disconnect audio`) sets `_manualStop` and stops the retry loop. Changing settings during a run does not interrupt the running helper — restart from the menu to apply.

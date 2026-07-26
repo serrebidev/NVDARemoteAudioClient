@@ -87,6 +87,24 @@ RESUME_GAP_SECONDS = 90
 RESUME_SETTLE_MS = 1500
 
 
+def _detachMenuAfterReload(menuOwner, toolsMenu, menuRoot, menu):
+	"""Remove a stale Tools-menu item while retaining its unsafe wx wrapper."""
+	try:
+		if menuRoot is not None:
+			toolsMenu.Remove(menuRoot)
+	except Exception:
+		log.debug("Failed to remove remote audio menu item", exc_info=True)
+	# Calling menu.Destroy(), or allowing the detached wx.Menu wrapper to be
+	# garbage-collected during a reload, terminates NVDA in native wxWidgets
+	# code. Keep the wrappers alive on the process-lifetime tray object; NVDA
+	# safely releases all of them when the tray icon is destroyed on exit.
+	retiredMenus = getattr(menuOwner, "_remoteAudioRetiredMenus", None)
+	if retiredMenus is None:
+		retiredMenus = []
+		setattr(menuOwner, "_remoteAudioRetiredMenus", retiredMenus)
+	retiredMenus.append((menuRoot, menu))
+
+
 def _loadConfig():
 	config = dict(DEFAULT_CONFIG)
 	try:
@@ -899,18 +917,22 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	def _destroyMenu(self):
 		menuRoot = self._menuRoot
 		menu = self._menu
+		menuOwner = gui.mainFrame.sysTrayIcon
+		toolsMenu = menuOwner.toolsMenu
 		self._menuRoot = None
 		self._menu = None
 		self._receiveItem = None
 		self._sendItem = None
 		self._recordItem = None
 		try:
-			if menuRoot is not None:
-				gui.mainFrame.sysTrayIcon.toolsMenu.Remove(menuRoot)
-			if menu is not None:
-				menu.Destroy()
+			# Reload Add-ons can be invoked from this same Tools menu. Removing
+			# or destroying a submenu synchronously while wx is dispatching that
+			# menu event can terminate NVDA inside native wxWidgets code. Detach
+			# our references now and defer native menu teardown until the current
+			# event returns.
+			wx.CallAfter(_detachMenuAfterReload, menuOwner, toolsMenu, menuRoot, menu)
 		except Exception:
-			log.debug("Failed to destroy remote audio menu", exc_info=True)
+			log.debug("Failed to schedule remote audio menu cleanup", exc_info=True)
 
 	def onReceive(self, event):
 		# Toggle: clicking the checked item disconnects.
