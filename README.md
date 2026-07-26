@@ -24,7 +24,7 @@ A screen-reader-first NVDA add-on for sending live Windows audio between two com
 
 Grab `remoteAudioClient-X.Y.Z.nvda-addon` from the [Releases page](https://github.com/serrebidev/NVDARemoteAudioClient/releases), open it, and let NVDA install it. Install the same version on both computers, then restart NVDA.
 
-For the highlights in version 0.2.1, see the [release notes](RELEASE_NOTES.md).
+For the highlights in version 0.2.2, see the [release notes](RELEASE_NOTES.md).
 
 ## First connection
 
@@ -53,6 +53,8 @@ The receiver can follow the Windows default playback device or stay pinned to an
 ## Controls and profiles
 
 The **NVDA Remote Audio** Tools submenu includes receive, send, reconnect, disconnect, recording, recordings folder, status, diagnostics, helper self-test, connection profiles, audio-server management, and settings.
+
+Version 0.2.2 safely removes the stale menu item while retaining its detached wx wrapper until NVDA exits, preventing add-on reloads from terminating NVDA.
 
 Receive, send, reconnect, disconnect, status, diagnostics, and recording are also available as unbound commands under the **NVDA Remote Audio** Input Gestures category. These gestures stay local while you control another computer through NVDA Remote.
 
