@@ -2,6 +2,7 @@ import json
 import os
 import ipaddress
 import importlib
+import socket
 import subprocess
 import threading
 import time
@@ -81,6 +82,18 @@ LATENCY_SETTINGS = {
 	"tailscale": {"prebufferMs": 50, "outputLatencyMs": 20, "bufferMs": 250, "opusFrameMs": 10},
 	"internet": {"prebufferMs": 100, "outputLatencyMs": 30, "bufferMs": 600, "opusFrameMs": 10},
 }
+
+# Tailscale hands every machine an address out of the CGNAT range, and routes
+# its MagicDNS resolver over the tailnet interface. Connecting a UDP socket to
+# that resolver therefore binds a local address that IS this machine's tailnet
+# address, without sending a packet, shelling out to the Tailscale CLI, or
+# requiring Tailscale to be installed in any particular place.
+TAILSCALE_CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+TAILSCALE_PROBE_ADDRESS = ("100.100.100.100", 53)
+# Any routable address will do to find the interface Windows would use to leave
+# this machine; nothing is sent, so the host never has to answer or even exist.
+LAN_PROBE_ADDRESS = ("8.8.8.8", 53)
+ADDRESS_PROBE_TIMEOUT_SEC = 1.0
 
 RESUME_MONITOR_INTERVAL_MS = 30000
 RESUME_GAP_SECONDS = 90
@@ -232,11 +245,113 @@ def _resolveLatencyProfile(config):
 		ip = ipaddress.ip_address(host.strip("[]"))
 	except Exception:
 		return "internet"
-	if ip.version == 4 and ip in ipaddress.ip_network("100.64.0.0/10"):
+	if ip.version == 4 and ip in TAILSCALE_CGNAT_NETWORK:
 		return "tailscale"
 	if ip.is_private or ip.is_loopback or ip.is_link_local:
 		return "lan"
 	return "internet"
+
+
+def _probeLocalAddress(target):
+	"""Return the local IPv4 address Windows would use to reach target, or None.
+
+	Connecting a UDP socket assigns a local address without transmitting
+	anything, so this is free and cannot be blocked by a firewall.
+	"""
+	sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+	try:
+		sock.settimeout(ADDRESS_PROBE_TIMEOUT_SEC)
+		sock.connect(target)
+		return sock.getsockname()[0]
+	except OSError:
+		return None
+	finally:
+		try:
+			sock.close()
+		except OSError:
+			pass
+
+
+def _detectTailscaleAddress():
+	"""This machine's Tailscale IPv4 address, or None when Tailscale is down."""
+	address = _probeLocalAddress(TAILSCALE_PROBE_ADDRESS)
+	if not address:
+		return None
+	try:
+		if ipaddress.ip_address(address) in TAILSCALE_CGNAT_NETWORK:
+			return address
+	except ValueError:
+		pass
+	return None
+
+
+def _hostnameAddress():
+	"""This machine's IPv4 address by name, for a LAN with no default route.
+
+	The probe below needs a route to somewhere to reveal an interface. A machine
+	on an isolated switch has none, yet is exactly the case where the other
+	computer has to be told an address by hand.
+	"""
+	try:
+		_name, _aliases, addresses = socket.gethostbyname_ex(socket.gethostname())
+	except OSError:
+		return None
+	for address in addresses:
+		try:
+			ip = ipaddress.ip_address(address)
+		except ValueError:
+			continue
+		if ip.version == 4 and not ip.is_loopback and ip not in TAILSCALE_CGNAT_NETWORK:
+			return address
+	return None
+
+
+def _detectLanAddress():
+	"""This machine's IPv4 address on the network it would leave by, or None."""
+	address = _probeLocalAddress(LAN_PROBE_ADDRESS) or _hostnameAddress()
+	if not address:
+		return None
+	try:
+		ip = ipaddress.ip_address(address)
+	except ValueError:
+		return None
+	# A tailnet address here means Tailscale is carrying the default route. It is
+	# already reported separately, and repeating it as "the local network
+	# address" would tell the user to type the same thing twice.
+	if ip in TAILSCALE_CGNAT_NETWORK:
+		return _hostnameAddress()
+	return address
+
+
+def _localAddresses():
+	"""The addresses another computer could use to reach this one."""
+	return {
+		"hostname": socket.gethostname(),
+		"tailscale": _detectTailscaleAddress(),
+		"lan": _detectLanAddress(),
+	}
+
+
+def _localAddressReport(addresses=None, port=None):
+	"""A short spoken and copyable answer to "what do I type on the other computer?"."""
+	addresses = _localAddresses() if addresses is None else addresses
+	port = DEFAULT_CONFIG["port"] if port is None else port
+	lines = []
+	if addresses.get("tailscale"):
+		# Translators: reported address of this computer over Tailscale.
+		lines.append(_("Tailscale address: {address}, port {port}").format(
+			address=addresses["tailscale"], port=port))
+	if addresses.get("lan"):
+		# Translators: reported address of this computer on the local network.
+		lines.append(_("Local network address: {address}, port {port}").format(
+			address=addresses["lan"], port=port))
+	if addresses.get("hostname"):
+		# Translators: reported computer name.
+		lines.append(_("Computer name: {name}").format(name=addresses["hostname"]))
+	if not lines:
+		# Translators: reported when no usable address for this computer was found.
+		return _("No network address for this computer could be found")
+	return "\n".join(lines)
 
 
 def _latencySettings(config):
@@ -797,6 +912,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			self.script_reportRemoteAudioStatus,
 			self.script_copyRemoteAudioDiagnostics,
 			self.script_toggleRemoteAudioRecording,
+			self.script_reportLocalAddress,
 		)
 		if RemoteAudioSettingsPanel not in gui.settingsDialogs.NVDASettingsDialog.categoryClasses:
 			gui.settingsDialogs.NVDASettingsDialog.categoryClasses.append(RemoteAudioSettingsPanel)
@@ -865,6 +981,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			self._recordItem = self._menu.AppendCheckItem(wx.ID_ANY, _("Record received audio"))
 			openRecordingsItem = self._menu.Append(wx.ID_ANY, _("Open recordings folder"))
 			statusItem = self._menu.Append(wx.ID_ANY, _("Audio status"))
+			addressItem = self._menu.Append(wx.ID_ANY, _("This computer's address for the other computer"))
 			diagnosticsItem = self._menu.Append(wx.ID_ANY, _("Copy audio diagnostics"))
 			selfTestItem = self._menu.Append(wx.ID_ANY, _("Run helper self-test"))
 			self._menu.AppendSeparator()
@@ -886,6 +1003,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onToggleRecording, self._recordItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onOpenRecordings, openRecordingsItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onStatus, statusItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onReportLocalAddress, addressItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onCopyDiagnostics, diagnosticsItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onSelfTest, selfTestItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onInstallServer, installItem)
@@ -1066,6 +1184,18 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		else:
 			wx.CallAfter(ui.message, _("Remote audio self-test failed: {error}").format(error=message))
 
+	def onReportLocalAddress(self, event):
+		# Setting up the receiving computer needs this machine's address, and
+		# finding a tailnet address without sight normally means going out to
+		# another application for it.
+		config = _loadConfig()
+		report = _localAddressReport(port=config.get("port"))
+		if self._copyToClipboard(report):
+			# Translators: announced with the address report after copying it.
+			ui.message(_("{report}. Copied to the clipboard.").format(report=report.replace("\n", ". ")))
+		else:
+			ui.message(report.replace("\n", ". "))
+
 	def onCopyDiagnostics(self, event):
 		text = self._diagnosticsText()
 		if self._copyToClipboard(text):
@@ -1161,6 +1291,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			"Helper path: {0}".format(HELPER_PATH),
 			"Helper exists: {0}".format(os.path.exists(HELPER_PATH)),
 			"Configured host: {0}".format(config.get("host")),
+			"This computer's Tailscale address: {0}".format(_detectTailscaleAddress() or "none"),
+			"This computer's local network address: {0}".format(_detectLanAddress() or "none"),
+			"This computer's name: {0}".format(socket.gethostname()),
 			"Configured port: {0}".format(config.get("port")),
 			"Startup action: {0} (resolved: {1})".format(config.get("startupMode"), _resolveStartupMode(config)),
 			"Latency profile: {0} (resolved: {1}; {2})".format(config.get("latencyProfile"), latencyProfile, latency),
@@ -1247,6 +1380,10 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	@script(description=_("Copy remote audio diagnostics"))
 	def script_copyRemoteAudioDiagnostics(self, gesture):
 		self.onCopyDiagnostics(None)
+
+	@script(description=_("Report this computer's address for remote audio"))
+	def script_reportLocalAddress(self, gesture):
+		self.onReportLocalAddress(None)
 
 	@script(description=_("Toggle recording of received remote audio"))
 	def script_toggleRemoteAudioRecording(self, gesture):

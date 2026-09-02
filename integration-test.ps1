@@ -197,8 +197,13 @@ function Invoke-WrongPasswordCase {
 		Stop-HelperProcess -Process $subscriber
 	}
 	$subscriberOutput = Get-CapturedProcessOutput -Process $subscriber
-	if ($subscriber.ExitCode -eq 0 -or $subscriberOutput -notmatch 'Unable to authenticate remote audio') {
+	if ($subscriber.ExitCode -eq 0 -or $subscriberOutput -notmatch 'same end-to-end encryption password') {
 		throw "Wrong-password stream did not fail clearly: $subscriberOutput"
+	}
+	# The whole point of naming the failures separately is that a wrong password
+	# does not send the user off to update an add-on that is already current.
+	if ($subscriberOutput -match 'Update the add-on') {
+		throw "Wrong-password stream blamed the add-on version: $subscriberOutput"
 	}
 	Write-Host 'Wrong-password rejection passed.'
 }

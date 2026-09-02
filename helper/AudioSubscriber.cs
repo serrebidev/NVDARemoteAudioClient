@@ -9,6 +9,9 @@ internal static class AudioSubscriber
 	private const int SampleRate = 48000;
 	private const int Channels = 2;
 	private const int MaxDecodedSamplesPerChannel = 5760;
+	// A single odd packet can be corruption in transit, so neither a rejected
+	// password nor a mismatched version ends the session on its own.
+	private const int FailuresBeforeGivingUp = 3;
 
 	public static async Task RunAsync(
 		RemoteAudioSession session,
@@ -53,6 +56,8 @@ internal static class AudioSubscriber
 		var plcFrames = 0UL;
 		var unrecoveredGaps = 0UL;
 		var authenticationFailures = 0UL;
+		var versionMismatches = 0UL;
+		var legacyPublisherPackets = 0UL;
 		var pcmPackets = 0UL;
 		var start = Stopwatch.StartNew();
 		var nextDiagnosticAt = TimeSpan.FromSeconds(5);
@@ -71,6 +76,8 @@ internal static class AudioSubscriber
 			["treble_db"] = trebleDb,
 			["encrypted"] = !string.IsNullOrEmpty(password),
 			["recording"] = recorder.IsRecording,
+			["payload_version"] = AudioPayloadProtocol.CurrentVersion,
+			["payload_version_minimum"] = AudioPayloadProtocol.OldestSupportedVersion,
 		});
 
 		try
@@ -78,26 +85,50 @@ internal static class AudioSubscriber
 			while (!cancellationToken.IsCancellationRequested)
 			{
 				var frame = await session.ReceiveAudioAsync(cancellationToken);
-				if (!payloadProtocol.TryDecode(
+				var status = payloadProtocol.Decode(
 					frame.Payload,
 					frame.Sequence,
 					frame.TimestampMs,
 					opusFrameMilliseconds,
 					plaintext,
-					out var payload))
+					out var payload);
+				if (status != AudioPayloadDecodeStatus.Ok)
 				{
-					authenticationFailures++;
-					if (authenticationFailures >= 3)
+					if (status is AudioPayloadDecodeStatus.PeerTooNew or AudioPayloadDecodeStatus.PeerTooOld)
 					{
-						throw new InvalidOperationException("Unable to authenticate remote audio. Check that both machines use the same end-to-end password and updated add-on version.");
+						versionMismatches++;
+						if (versionMismatches >= FailuresBeforeGivingUp)
+						{
+							throw new InvalidOperationException(
+								VersionMismatchMessage(status, AudioPayloadProtocol.PeerVersion(frame.Payload)));
+						}
+						continue;
+					}
+					authenticationFailures++;
+					if (authenticationFailures >= FailuresBeforeGivingUp)
+					{
+						throw new InvalidOperationException(
+							status == AudioPayloadDecodeStatus.AuthenticationFailed
+								? "Remote audio was rejected. Both computers must use the same end-to-end encryption password."
+								: "Remote audio arrived damaged and could not be decoded. Check the network path between the two computers.");
 					}
 					continue;
 				}
 				if (!string.IsNullOrEmpty(password) && !payload.Encrypted)
 				{
-					throw new InvalidOperationException("The publisher is sending unencrypted audio while this receiver requires an end-to-end password.");
+					// A stream with no envelope at all comes from a publisher older than
+					// 0.2.0, which cannot encrypt: name the machine that needs updating
+					// rather than only what is wrong with the audio.
+					throw new InvalidOperationException(payload.Legacy
+						? "The sending computer is running a version of NVDA Remote Audio Client older than 0.2.0, which cannot encrypt audio. Update the add-on on the sending computer, or clear the end-to-end encryption password on both computers."
+						: "The publisher is sending unencrypted audio while this receiver requires an end-to-end password.");
+				}
+				if (payload.Legacy)
+				{
+					legacyPublisherPackets++;
 				}
 				authenticationFailures = 0;
+				versionMismatches = 0;
 				if (lastSequence != ulong.MaxValue && frame.Sequence <= lastSequence)
 				{
 					duplicateOrLatePackets++;
@@ -169,6 +200,8 @@ internal static class AudioSubscriber
 						["plc_frames"] = plcFrames,
 						["unrecovered_gaps"] = unrecoveredGaps,
 						["authentication_failures"] = authenticationFailures,
+						["version_mismatches"] = versionMismatches,
+						["legacy_publisher_packets"] = legacyPublisherPackets,
 						["pcm_packets"] = pcmPackets,
 						["buffer_ms"] = playback.CurrentBufferMs,
 						["underruns"] = playback.Underruns,
@@ -179,6 +212,7 @@ internal static class AudioSubscriber
 						["drift_repeats"] = playback.DriftRepeats,
 						["drift_resampler_ratio"] = playback.DriftResamplerRatio,
 						["drift_resampler_updates"] = playback.DriftResamplerUpdates,
+						["endpoint_rebuilds"] = playback.EndpointRebuilds,
 						["udp_max_receive_gap_ms"] = session.TakeMaxReceiveGapMilliseconds(),
 					});
 					nextDiagnosticAt += TimeSpan.FromSeconds(5);
@@ -190,6 +224,15 @@ internal static class AudioSubscriber
 			(decoder as IDisposable)?.Dispose();
 		}
 	}
+
+	/// <summary>
+	/// Names the computer whose add-on is behind. That is the only actionable part,
+	/// and the user cannot see the other machine's screen to work it out.
+	/// </summary>
+	private static string VersionMismatchMessage(AudioPayloadDecodeStatus status, int peerVersion) =>
+		status == AudioPayloadDecodeStatus.PeerTooNew
+			? $"The sending computer has a newer version of NVDA Remote Audio Client than this one. Update the add-on on this computer. It sent audio format {peerVersion}; this computer understands up to {AudioPayloadProtocol.CurrentVersion}."
+			: $"The sending computer has an older version of NVDA Remote Audio Client than this one. Update the add-on on the sending computer. It sent audio format {peerVersion}; this computer needs at least {AudioPayloadProtocol.OldestSupportedVersion}.";
 
 	private static bool TryDecodeFec(
 		IOpusDecoder decoder,

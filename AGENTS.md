@@ -41,7 +41,9 @@ Run these from the repository root before committing:
 git diff --check
 ```
 
-`run-tests.ps1` builds and publishes the helper, exercises protocol/encryption/audio-shaping self-tests, checks live audio discovery and option validation, compiles the Python modules, and validates the manifest and documentation.
+`run-tests.ps1` builds and publishes the helper, exercises the helper self-tests (encryption, payload version negotiation, UDP framing, ring buffer, audio shaping, frame queue, option parsing, and following the output device), checks live audio discovery and option validation, compiles the Python modules, runs `tools/selftest_addon.py`, and validates the manifest and documentation.
+
+Add a check to `tools/selftest_addon.py` or `helper/HelperSelfTestCases.cs` for any behaviour a release note claims. `python tools/mutation_check.py` verifies the suite would actually catch a broken build; it needs a clean working tree, takes a few minutes, and is not part of `run-tests.ps1`. Add a mutation there for each new invariant worth defending, and never leave a reported miss unaddressed — a miss is a hole in the tests.
 
 `integration-test.ps1` requires an installed `C:\NVDARemoteAudioServer\NVDARemoteAudioServer.exe`. It automatically relaunches under PowerShell 7 when invoked from Windows PowerShell 5.1 and uses isolated test ports. It must pass encrypted Opus beyond the relay idle timeout, encrypted PCM, WAV recording, wrong-password rejection, and recovery after a real relay process restart.
 

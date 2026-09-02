@@ -84,6 +84,16 @@ internal sealed class AudioRingBuffer
 		return bytesRead / sizeof(float);
 	}
 
+	/// <summary>
+	/// Discards everything buffered without counting it against <see cref="Drops"/>.
+	///
+	/// A drop means audio that arrived and could not be kept -- a real symptom.
+	/// Deliberately emptying the buffer when playback moves to another device is
+	/// not that, and counting it as one would make a healthy device switch read as
+	/// buffer overflow in the diagnostics report.
+	/// </summary>
+	public void Clear() => Volatile.Write(ref _head, Volatile.Read(ref _tail));
+
 	public void DropOldest(int bytesToDrop)
 	{
 		if (bytesToDrop <= 0)
