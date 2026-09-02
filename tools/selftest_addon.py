@@ -555,7 +555,16 @@ def testSecretsNeverReachTheCommandLine(mod):
 	"""
 	import subprocess as realSubprocess
 	originalPopen = realSubprocess.Popen
+	originalHelperPath = mod.HELPER_PATH
 	realSubprocess.Popen = fakePopen
+	# start() refuses to launch when the helper binary is missing, and the binary
+	# is staged into addon/bin/ by build.ps1 -- which runs *after* the tests. Point
+	# at a stand-in that exists, so this checks the arguments rather than quietly
+	# checking nothing on a clean checkout.
+	standIn = os.path.join(os.path.dirname(mod.CONFIG_PATH), "NVDARemoteAudioHelper.exe")
+	with io.open(standIn, "w", encoding="utf-8") as f:
+		f.write("not a real helper")
+	mod.HELPER_PATH = standIn
 	del launched[:]
 	try:
 		config = mod._normalizeConfig({
@@ -569,6 +578,11 @@ def testSecretsNeverReachTheCommandLine(mod):
 		client = mod.AudioClientProcess()
 		client.start("publisher", config)
 		check("the publisher was launched", len(launched), 1)
+		if not launched:
+			# Without this the assertions below raise IndexError and the run dies
+			# before reporting the other checks.
+			failures.append("no helper was launched; the checks below could not run")
+			return
 
 		args = launched[0]["args"]
 		env = launched[0]["env"] or {}
@@ -643,8 +657,20 @@ def testSecretsNeverReachTheCommandLine(mod):
 		client.start("subscriber", bad)
 		check("an invalid key starts no helper", len(launched), 0)
 		check_true("an invalid key is announced", len(spoken) > 0)
+
+		# A missing helper binary must be reported, not silently do nothing. This
+		# is also the state a clean checkout is in, which is why the stand-in above
+		# exists at all.
+		del launched[:]
+		del spoken[:]
+		mod.HELPER_PATH = os.path.join(os.path.dirname(standIn), "definitely-not-here.exe")
+		client = mod.AudioClientProcess()
+		client.start("subscriber", mod._normalizeConfig({"host": "pc", "key": "room"}))
+		check("a missing helper starts nothing", len(launched), 0)
+		check_true("a missing helper is announced", any("missing" in m.lower() for m in spoken))
 	finally:
 		realSubprocess.Popen = originalPopen
+		mod.HELPER_PATH = originalHelperPath
 
 
 def testDiagnosticsNeverLeakThePassword(mod):
@@ -710,8 +736,18 @@ def main():
 			testDiagnosticsNeverLeakThePassword,
 			testServerStatusIsReadable,
 		):
+			# A test that runs no checks reports "ok" while proving nothing. That is
+			# how a suite drifts into passing on an environment it never exercised:
+			# the add-on's helper binary is staged by build.ps1, which runs after
+			# the tests, so on a clean checkout a test that depends on it used to
+			# sail past having launched nothing at all.
+			before = checks
 			test(mod)
-			print("  {0}: ok".format(test.__name__))
+			if checks == before:
+				failures.append("{0} ran no checks at all".format(test.__name__))
+				print("  {0}: RAN NO CHECKS".format(test.__name__))
+			else:
+				print("  {0}: ok ({1} checks)".format(test.__name__, checks - before))
 	finally:
 		shutil.rmtree(scratch, ignore_errors=True)
 
