@@ -59,6 +59,37 @@ NVDA add-on side of [NVDA Remote Audio Client](../README.md). Spawns and supervi
 
 The add-on also exposes unbound NVDA Input Gestures under the `NVDA Remote Audio` category: receive, send, disconnect, reconnect, report status, and copy diagnostics. Those gestures are registered with NVDA Remote's local-script list so they still run on the machine where you press them while you are controlling another machine with F11.
 
+## Reporting this computer's address
+
+`Tools > NVDA Remote Audio > This computer's address for the other computer`
+(also an unbound gesture) speaks and copies the address to type on the other
+machine. `_detectTailscaleAddress()` connects a UDP socket to Tailscale's
+MagicDNS resolver at `100.100.100.100:53` and reads back the local address the
+route picked, which is this machine's tailnet address; nothing is transmitted,
+and a result outside `100.64.0.0/10` is discarded as not being Tailscale.
+`_detectLanAddress()` does the same against a routable address, falling back to
+resolving the computer's own name for a LAN with no default route.
+
+## Testing without NVDA
+
+`python tools/selftest_addon.py` stubs the NVDA modules this plugin imports,
+points its configuration at a scratch directory, and drives the real module —
+configuration normalization and round-trip, damaged configuration files, key
+validation, latency and quality resolution, startup-role selection, address
+detection, spoken labels, helper-event routing, and the exact arguments and
+environment the helper would be launched with. No NVDA, no relay, and no helper
+binary required. `run-tests.ps1` runs it.
+
+Two checks exist specifically to keep secrets where they belong: the encryption
+password must not appear in the helper's command line (any process on the machine
+can read another's) and must not appear in copied diagnostics (those get pasted
+into bug reports). Both are easy to break by accident and invisible when broken.
+
+`python tools/mutation_check.py` breaks one thing at a time on purpose and
+reports anything the suite fails to notice — a suite that always passes is
+indistinguishable from one that tests nothing. It needs a clean working tree and
+takes a few minutes, so it is not part of `run-tests.ps1`.
+
 ## Add-on reload safety
 
 Remote Audio detaches its menu references immediately during Reload Add-ons, removes the stale menu item after the active event returns, and retains the unsafe detached wx wrapper until NVDA exits. This prevents NVDA from terminating when reload is started from the Tools menu or its assigned keyboard gesture.

@@ -94,6 +94,23 @@ Packet size and subscriber-side jitter buffering are tunable from CLI (the add-o
 | `JsonLog.cs` | One-line-JSON status events written to stdout. |
 | `HResult.cs` | Throws `COMException` on non-zero HRESULTs. |
 
+## Tests
+
+`dotnet run -- --self-test` (or `--self-test` on the built EXE) runs everything
+that needs no relay and no network: payload encryption, authentication and
+version negotiation, UDP framing and its rejection of malformed and truncated
+packets, the playback ring buffer's wrap-around, overflow and underrun paths,
+audio shaping and clamping, the frame queue, and command-line parsing. Cases live
+in `HelperSelfTestCases.cs`; `HelperSelfTest.cs` holds the encryption cases and
+the playback-device test.
+
+The playback-device test opens a real output device, moves playback as a device
+change would, and checks audio restarts on the new one. It reports `skipped`
+rather than failing where there is no playback device.
+
+`run-tests.ps1` runs all of it on every build. `integration-test.ps1` covers what
+this cannot: a real relay, real UDP, and recovery after the relay restarts.
+
 ## Wire format
 
 UDP packets:
@@ -105,6 +122,44 @@ UDP packets:
 ```
 
 Opus payloads are kept under the server's `udp_audio_payload_max_bytes` (default 1200).
+
+Inside `kind=4`, the end-to-end payload envelope (`AudioPayloadProtocol.cs`), which
+the relay forwards without understanding:
+
+```
+"RAE2" (4) | version (1) | flags (1) | codec (1) | frame_ms (1) | nonce_base (12)
+  └ body: Opus or PCM16, followed by a 16-byte GCM tag when flags bit 0 is set
+```
+
+A payload with no `RAE2` magic is a pre-0.2.0 publisher sending bare Opus, and is
+still accepted when no encryption password is set.
+
+### Payload versioning
+
+The version byte is versioned **independently of the add-on's release number**.
+What the two machines have to agree on is this wire contract, not the version in
+`manifest.ini`, and the two move on different schedules.
+
+- Current version: **2**. Oldest accepted: **2** (`AudioPayloadProtocol.CurrentVersion`
+  and `.OldestSupportedVersion`).
+- Bump it **only for a breaking change**: a redefined header field, a different
+  nonce or AAD construction, new framing.
+- An **additive** change must not bump it. A receiver ignores header bits it does
+  not recognise rather than failing, and that tolerance is the only thing that
+  makes the number worth checking.
+- The one exception is the **codec byte**. A stream in a codec this build cannot
+  decode is unusable however tolerant the parser is, so an unknown codec is
+  reported as a newer publisher rather than as corruption.
+
+The audio path is one-way UDP with no peer handshake, so this byte is the only
+thing that can tell an out-of-date add-on apart from a wrong password. Both are
+reported separately, all the way to the user, and the message names **which
+computer** to update — that is the only actionable part, and the user cannot see
+the other machine's screen to work it out. A bare drop would be
+indistinguishable from a wrong password, a firewall, or the VPN being down.
+
+Three consecutive undecodable packets end the session, so a single packet
+mangled in transit never does.
 
 TCP control: one line of JSON `{"role":"publisher"|"subscriber","key":"<key>"}` to handshake. Server returns `{"status":"ok",...}` with `session_id`, `udp_port`, `tcp_heartbeat_interval_ms`, `udp_session_timeout_ms`, `udp_audio_payload_max_bytes`. Then `{"type":"heartbeat"}` lines on the interval the server returned.
 

@@ -17,6 +17,9 @@ A screen-reader-first NVDA add-on for sending live Windows audio between two com
 - Records received audio to timestamped WAV files.
 - Saves complete connection setups as named profiles.
 - Reconnects after sleep, resume, server restarts, and unexpected disconnects.
+- Follows the receiving computer's audio output when headphones are unplugged or the default device changes.
+- Reports this computer's Tailscale and local network address for setting up the other computer.
+- Says which computer's add-on to update when the two versions cannot talk to each other.
 - Installs, updates, repairs, and removes the relay server from NVDA's Tools menu.
 - Provides accessible menus, spoken status, copyable diagnostics, a helper self-test, and bindable NVDA Input Gestures.
 
@@ -24,7 +27,7 @@ A screen-reader-first NVDA add-on for sending live Windows audio between two com
 
 Grab `remoteAudioClient-X.Y.Z.nvda-addon` from the [Releases page](https://github.com/serrebidev/NVDARemoteAudioClient/releases), open it, and let NVDA install it. Install the same version on both computers, then restart NVDA.
 
-For the highlights in version 0.2.2, see the [release notes](RELEASE_NOTES.md).
+For the highlights in version 0.2.3, see the [release notes](RELEASE_NOTES.md).
 
 ## First connection
 
@@ -48,15 +51,17 @@ The add-on normally detects its role for you: a computer with the audio server s
 - **Opus broadcast** favors quality and resilience over the last few milliseconds.
 - **PCM** sends uncompressed 48 kHz stereo audio and is intended for a clean LAN.
 
-The receiver can follow the Windows default playback device or stay pinned to another active output. Volume ranges from 0 to 200 percent, pan ranges from full left to full right, and each EQ band ranges from -12 to +12 dB.
+The receiver can follow the Windows default playback device or stay pinned to another active output. Following the default now means following it for the whole session: unplugging headphones, a Bluetooth link dropping, or changing the Windows output moves playback to the endpoint that is actually current instead of leaving it on the old one. Volume ranges from 0 to 200 percent, pan ranges from full left to full right, and each EQ band ranges from -12 to +12 dB.
 
 ## Controls and profiles
 
-The **NVDA Remote Audio** Tools submenu includes receive, send, reconnect, disconnect, recording, recordings folder, status, diagnostics, helper self-test, connection profiles, audio-server management, and settings.
+The **NVDA Remote Audio** Tools submenu includes receive, send, reconnect, disconnect, recording, recordings folder, status, this computer's address, diagnostics, helper self-test, connection profiles, audio-server management, and settings.
+
+**This computer's address for the other computer** speaks and copies this machine's Tailscale address, local network address, computer name, and port — the details to type on the other computer during setup.
 
 Version 0.2.2 safely removes the stale menu item while retaining its detached wx wrapper until NVDA exits, preventing add-on reloads from terminating NVDA.
 
-Receive, send, reconnect, disconnect, status, diagnostics, and recording are also available as unbound commands under the **NVDA Remote Audio** Input Gestures category. These gestures stay local while you control another computer through NVDA Remote.
+Receive, send, reconnect, disconnect, status, this computer's address, diagnostics, and recording are also available as unbound commands under the **NVDA Remote Audio** Input Gestures category. These gestures stay local while you control another computer through NVDA Remote.
 
 Connection profiles save the host, room, password, role, quality, routing, playback, recording, and latency settings together. Use **Save current settings as profile**, **Load connection profile**, and **Delete connection profile** from the Tools submenu.
 
@@ -65,6 +70,8 @@ Connection profiles save the host, room, password, role, quality, routing, playb
 With a password set, every audio packet is authenticated and encrypted with AES-256-GCM before it leaves the helper. A room-specific key is derived with PBKDF2-SHA256, and a wrong password is rejected clearly. The password is passed to the helper through an environment variable instead of its visible command line.
 
 Leaving the password empty enables unencrypted compatibility with older add-on versions. Use that only on a trusted LAN or inside a VPN such as Tailscale. Both computers need version 0.2.0 or newer for encrypted audio and PCM.
+
+When the two computers cannot understand each other's audio, the receiver now says which one to update rather than falling silent. A wrong encryption password, a damaged network path, and a version mismatch are reported as three different problems, because they are fixed on different machines.
 
 The add-on still uses [NVDARemoteAudioServer](https://github.com/haitun001/NVDARemoteAudioServer) 0.5 as its relay. Payload v2 is opaque to the server, so encryption and the new codecs do not require a replacement relay protocol.
 
@@ -86,6 +93,8 @@ Install the .NET 9 SDK and Python, then run:
 .\integration-test.ps1
 .\build.ps1
 ```
+
+`run-tests.ps1` includes the helper self-tests and `python tools/selftest_addon.py`, which exercises the add-on's own logic with the NVDA modules stubbed out, so it needs neither NVDA nor a relay. `python tools/mutation_check.py` breaks one thing at a time on purpose and reports anything the suite fails to notice.
 
 The integration test uses an installed `NVDARemoteAudioServer.exe` on isolated test ports. The build produces `dist\remoteAudioClient-X.Y.Z.nvda-addon` and includes a self-contained Windows x64 helper.
 

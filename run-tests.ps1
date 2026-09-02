@@ -73,14 +73,28 @@ try {
 	}
 
 	Write-Host 'Running helper protocol and encryption self-tests...'
-	$selfTestJson = (& $helperExe --self-test) -join "`n"
+	$selfTestLines = @(& $helperExe --self-test)
 	if ($LASTEXITCODE -ne 0) {
-		throw "Helper --self-test failed with exit code $LASTEXITCODE"
+		throw "Helper --self-test failed with exit code $LASTEXITCODE`n$($selfTestLines -join "`n")"
 	}
-	$selfTestPayload = $selfTestJson | ConvertFrom-Json
-	if ($selfTestPayload.event -ne 'self_test' -or $selfTestPayload.encryption -ne 'passed') {
-		throw 'Helper --self-test did not report successful encryption tests'
+	# The self-test opens a real playback device, so it logs status lines of its
+	# own before the verdict. Pick the verdict line out, the way the add-on does.
+	$selfTestPayload = $selfTestLines |
+		ForEach-Object { try { $_ | ConvertFrom-Json } catch { } } |
+		Where-Object { $_.event -eq 'self_test' } |
+		Select-Object -First 1
+	if ($null -eq $selfTestPayload -or $selfTestPayload.encryption -ne 'passed') {
+		throw "Helper --self-test did not report successful encryption tests`n$($selfTestLines -join "`n")"
 	}
+	if ($selfTestPayload.payload_version_negotiation -ne 'passed') {
+		throw 'Helper --self-test did not report successful payload version negotiation'
+	}
+	# "skipped" is legitimate on a machine with no playback device; a failure would
+	# have thrown above and never reached here.
+	if ($selfTestPayload.endpoint_following -notmatch '^(passed|skipped)') {
+		throw "Helper --self-test did not exercise output device following: $($selfTestPayload.endpoint_following)"
+	}
+	Write-Host "  payload version $($selfTestPayload.payload_version) (oldest accepted $($selfTestPayload.payload_version_minimum)); endpoint following $($selfTestPayload.endpoint_following)"
 
 	Write-Host 'Checking live audio discovery commands...'
 	$outputDeviceJson = (& $helperExe --list-output-devices) -join "`n"
@@ -132,6 +146,16 @@ try {
 		'py_compile',
 		(Join-Path $addonDir 'globalPlugins\remoteAudioClient\__init__.py'),
 		(Join-Path $addonDir 'globalPlugins\remoteAudioClient\server_installer.py')
+	)
+	Get-ChildItem -LiteralPath $addonDir -Recurse -Directory -Filter '__pycache__' -Force -ErrorAction SilentlyContinue |
+		Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+	# Compiling only proves the add-on parses. This drives the real module with the
+	# NVDA modules stubbed out, so configuration handling, latency and quality
+	# resolution, address detection and helper-event routing are actually checked.
+	Write-Host 'Running add-on self-tests...'
+	Invoke-CheckedCommand -FilePath $python.Source -Arguments @(
+		(Join-Path $repoRoot 'tools\selftest_addon.py')
 	)
 	Get-ChildItem -LiteralPath $addonDir -Recurse -Directory -Filter '__pycache__' -Force -ErrorAction SilentlyContinue |
 		Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
