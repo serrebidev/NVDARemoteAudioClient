@@ -846,6 +846,16 @@ def testConnectionProblems(mod):
 	check("an unencrypted relay connection is still allowed",
 		mod._connectionProblem("subscriber", {"transport": "nvda", "key": "room", "password": ""}), None)
 
+	# Choosing a device switches the connection type itself, without the settings
+	# panel's password check, so it is the one path that can leave a RemSound setup
+	# that can never start. That is the moment to say a password is still needed.
+	check_true("choosing a device with no password says so",
+		mod._remSoundPasswordWarning({"transport": "remsound", "password": ""}) != "")
+	check("a RemSound setup that has a password does not warn",
+		mod._remSoundPasswordWarning({"transport": "remsound", "password": "plexbox"}), "")
+	check("the relay path never warns about a password",
+		mod._remSoundPasswordWarning({"transport": "nvda", "password": ""}), "")
+
 
 def testRemSoundHelperArguments(mod):
 	"""The exact command line and environment a RemSound connection launches with."""

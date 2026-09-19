@@ -302,6 +302,20 @@ def _connectionProblem(role, config):
 	return _validateKey(str(config.get("key") or "").strip())
 
 
+def _remSoundPasswordWarning(config):
+	"""The spoken password reminder for a RemSound setup that has none, or an empty string.
+
+	The settings panel refuses to save RemSound without a password, so choosing a
+	device -- the one path that sets the connection type itself -- is the only way to
+	end up in a RemSound setup that can never start. That is the moment to say so,
+	not after the user has pressed connect and been told it cannot run.
+	"""
+	if config.get("transport") == "remsound" and not str(config.get("password") or ""):
+		# Translators: RemSound always encrypts, so a setup without a password cannot start.
+		return _("RemSound also needs an encryption password: set the same one the other device uses in NVDA Remote Audio settings.")
+	return ""
+
+
 def _helperArguments(role, config, helperPath=None, nvdaPid=None):
 	"""The helper command line and the environment it needs, for one connection.
 
@@ -1526,6 +1540,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			message = _("No devices chosen")
 		if switched:
 			message += ". " + _("Connection type changed to RemSound")
+		warning = _remSoundPasswordWarning(config)
+		if warning:
+			message += ". " + warning
 		ui.message(message)
 		if self._client.isRunning():
 			self.onReconnect(None)

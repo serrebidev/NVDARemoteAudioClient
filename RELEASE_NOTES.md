@@ -1,5 +1,19 @@
 # NVDA Remote Audio Client release notes
 
+## 0.2.6
+
+### Choosing a RemSound device now says when a password is still needed
+
+- RemSound always encrypts, so it can never connect without an encryption password. The settings panel already refuses to save a RemSound connection without one — but **Find RemSound devices on this network** is the one path that selects the connection type itself, and it performed no such check. Ticking a phone there switched the connection to RemSound, said so, and left the password empty, so every later attempt to connect was refused.
+- Choosing a device now says, in that same spoken message, that RemSound also needs an encryption password and where to set it. The reminder appears only when a password really is missing: a RemSound setup that has one is silent, and the relay path never mentions a password at all.
+- Found on a real installation, which is the worst way to find it: an add-on at the RemSound connection type, a phone chosen, no password, and the same "RemSound connections need an encryption password" on every start with nothing earlier tying the two together.
+
+### Testing
+
+- `tools/selftest_addon.py` covers the reminder in all three cases: present for a RemSound setup with no password, absent once one is set, and never on the relay path.
+- `tools/mutation_check.py` grows to 28 mutations, all caught.
+- Re-verified live against the RemSound iPhone app, including the path the add-on actually uses when you tick a discovered device: resolving the phone by name (`--peer-names iPhone`) brought back 24.3 seconds of the phone's microphone with every 100 ms window audible and zero authentication failures.
+
 ## 0.2.5
 
 ### This computer keeps one RemSound identity
