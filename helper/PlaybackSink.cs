@@ -293,6 +293,20 @@ internal sealed class PlaybackSink : IDisposable
 	/// </summary>
 	public bool IsPlaying => _playing;
 
+	/// <summary>Receive volume in percent, 0 to 200, changed live without reopening the device.</summary>
+	public int Volume
+	{
+		get => _provider.Shaper.Volume;
+		set => _provider.Shaper.Volume = value;
+	}
+
+	/// <summary>Silences received audio while keeping the stream, the buffer and the recording running.</summary>
+	public bool Muted
+	{
+		get => _provider.Shaper.Muted;
+		set => _provider.Shaper.Muted = value;
+	}
+
 	/// <summary>
 	/// Pretends Windows announced a new default output device, for the self-test.
 	/// A real device change cannot be staged from code, and the part worth proving
@@ -383,6 +397,8 @@ internal sealed class PlaybackSink : IDisposable
 		private int _lastInputFramesAvailable;
 
 		private readonly AudioShaper _shaper;
+
+		public AudioShaper Shaper => _shaper;
 
 		public LowLatencyFloatProvider(
 			int sampleRate,
@@ -707,7 +723,8 @@ internal sealed class PlaybackSink : IDisposable
 internal sealed class AudioShaper
 {
 	private readonly int _channels;
-	private readonly float _volume;
+	private volatile float _volume;
+	private volatile bool _muted;
 	private readonly float _leftPanGain;
 	private readonly float _rightPanGain;
 	private readonly BiQuadFilter[] _bassFilters;
@@ -732,8 +749,26 @@ internal sealed class AudioShaper
 			.ToArray();
 	}
 
+	/// <summary>Volume in percent. Set from the command thread and read by the render thread, hence volatile.</summary>
+	public int Volume
+	{
+		get => (int)Math.Round(_volume * 100f);
+		set => _volume = Math.Clamp(value, 0, 200) / 100f;
+	}
+
+	public bool Muted
+	{
+		get => _muted;
+		set => _muted = value;
+	}
+
 	public void Process(Span<float> samples)
 	{
+		if (_muted)
+		{
+			samples.Clear();
+			return;
+		}
 		for (var index = 0; index < samples.Length; index++)
 		{
 			var channel = index % _channels;

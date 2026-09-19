@@ -11,6 +11,16 @@ internal enum ConnectionRole
 {
 	Publisher,
 	Subscriber,
+	/// <summary>Sends and receives at once. RemSound connections only; the relay server carries one direction.</summary>
+	Duplex,
+}
+
+internal enum AudioTransport
+{
+	/// <summary>Through an NVDARemoteAudioServer relay, keyed by a room name.</summary>
+	NvdaRelay,
+	/// <summary>Peer to peer with RemSound's protocol, compatible with its Windows, iPhone and Android apps.</summary>
+	RemSound,
 }
 
 internal enum UdpPacketKind : byte

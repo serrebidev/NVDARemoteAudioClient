@@ -1,5 +1,52 @@
 # NVDA Remote Audio Client release notes
 
+## 0.2.4
+
+### A second connection type: RemSound, peer to peer
+
+- **Connection type** in settings now chooses between **NVDA Remote Audio server** (the existing relay, a room name on port 6838) and **RemSound peer to peer**. The audio-server path is unchanged and remains the default, so existing profiles keep working exactly as before.
+- RemSound connections speak the wire protocol of the [RemSound](https://github.com/Ednunp/RemSound) apps: the Windows sender, its send-only service, the iPhone and Mac app, and the Android receiver. A Windows computer running this add-on can send audio to a phone, receive a phone's microphone, or both.
+- RemSound always encrypts, so a connection type of RemSound requires an encryption password; the settings panel refuses to save one without it. The key is derived the same way every RemSound app derives it (PBKDF2-HMAC-SHA256, 100 000 iterations, RemSound's fixed salts), and the add-on's self-test pins the same key and fingerprint vectors the iPhone app pins. If the derivation ever drifted, this add-on could no longer talk to any RemSound device.
+- A sender that disagrees about the password is told apart from one that needs updating: the Format packet carries a password fingerprint, so a mismatch now says so instead of leaving the user with silence.
+- Packets are laid out exactly as RemSound lays them out — nonce, tag, ciphertext — with a fresh 48-bit nonce prefix per stream and a counter, so a nonce cannot repeat within a stream.
+
+### Sending and receiving at the same time
+
+- **Send and receive at the same time (RemSound)** is a new startup action, Tools-menu item, and unbound gesture. Two-way audio is only offered on a RemSound connection, because the relay server carries audio in one direction; choosing it over the relay says so rather than failing later.
+- The helper grows a microphone capture source, so a RemSound connection can send the Windows default recording device or a named one instead of the system mix. The same list of recording devices feeds the **Audio to send** choice beside the existing application list.
+- A duplex connection sends with `--bitrate` and receives with the usual jitter buffer at once, from one UDP socket.
+
+### Finding devices, and naming them
+
+- **Find RemSound devices on this network** listens for RemSound's discovery announcements and lists what answered, with each device's name, what it can do (sends, receives, or both), and every address it answered on. Devices are grouped by name, because a phone on Wi-Fi and Tailscale at once, or a PC with several adapters, announces once per address and the user is choosing a device, not an adapter.
+- Devices chosen from that list are stored by name and matched as they appear, so a phone that changes address keeps working. Addresses can also be typed for anything discovery cannot reach, such as a Tailscale name or a RemSound relay.
+- **Name other RemSound devices see for this computer** overrides the computer name, which is what a screen reader user hears on the other device when choosing.
+
+### Volume and remote control without reconnecting
+
+- The helper now reads live commands from its standard input, so a volume change takes effect immediately instead of costing a disconnect and reconnect. A command is one line starting with `!`; any other byte, or the pipe closing, still means shut down, so the old contract is intact.
+- New unbound gestures under the **NVDA Remote Audio** category: raise, lower, and mute received audio, and raise, lower, and mute the other device's RemSound volume or Windows volume. Nothing is bound to a key, and every command is also reachable from the Tools menu.
+- Lowering the receive volume while nothing is playing now changes the saved value for the next connection instead of doing nothing.
+- **Let RemSound devices that share the password change this computer's volume** is off by default and off unless asked for. Remote-control commands are sealed with the audio key, refused when they are more than ten minutes old, and refused when replayed, so a command cannot be forged by anyone who does not know the password.
+- Volume the other device changes, and Windows volume the other device changes, are spoken and recorded differently, because only one of them belongs in this add-on's saved settings.
+
+### Testing
+
+- Adds `RemSoundSelfTestCases.cs` to the helper self-test: the pinned cross-port key and fingerprint vectors, the header and Format layouts, the nonce-tag-ciphertext layout and nonce uniqueness, 24-bit PCM packing and multi-part reassembly, sealed remote control including replay and staleness, discovery parsing and name cleanup, peer parsing, the new command-line options, and live volume clamping and mute.
+- `tools/selftest_addon.py` grows from 171 to 263 checks, covering RemSound address and device-name parsing, the reason a connection cannot start, the exact command line and environment a RemSound connection launches with, live volume events from both ends, the `!` command marker, and device grouping for the chooser.
+- `tools/mutation_check.py` grows to 26 mutations, including eleven for the RemSound transport. All 26 are currently caught.
+- The iPhone interop path was exercised live: a two-way session against a real iPhone running RemSound carried audio both ways with no decryption failures.
+
+### Documentation
+
+- The root README, the bundled `readme.html`, and `helper/README.md` document the RemSound connection type, the duplex role, microphone sending, live volume, remote control, and the RemSound wire format.
+- `addon/README.md` documents the new configuration keys and shows a RemSound helper invocation beside the existing relay one.
+
+### Compatibility
+
+- RemSound connections need a password on both devices and the same port (47830 by default; discovery uses 47821).
+- The relay path, its payload-v2 encryption, its latency profiles, and its profiles are untouched. Leaving the connection type alone behaves exactly as 0.2.3 did.
+
 ## 0.2.3
 
 ### Playback follows the output device

@@ -68,7 +68,7 @@ try {
 	if ($LASTEXITCODE -ne 0) {
 		throw "Helper --help failed with exit code $LASTEXITCODE"
 	}
-	foreach ($expected in '--role', '--host', '--key', '--opus-frame-ms', '--disable-fec', '--prebuffer-ms', '--include-process-name', '--output-device-id', '--receive-volume', '--receive-pan', '--bass-db', '--mid-db', '--treble-db', '--password-env', '--codec', '--record-folder', '--list-audio-apps', '--list-output-devices', '--self-test') {
+	foreach ($expected in '--role', '--host', '--key', '--opus-frame-ms', '--disable-fec', '--prebuffer-ms', '--include-process-name', '--output-device-id', '--receive-volume', '--receive-pan', '--bass-db', '--mid-db', '--treble-db', '--password-env', '--codec', '--record-folder', '--list-audio-apps', '--list-output-devices', '--self-test', '--transport', '--peers', '--peer-names', '--device-name', '--local-port', '--discovery-port', '--allow-remote-control', '--capture-device-id', '--list-input-devices', '--discover-peers') {
 		Assert-Contains $helpText $expected
 	}
 
@@ -125,6 +125,39 @@ try {
 		throw 'Helper accepted a PCM packet duration larger than the relay MTU allows'
 	}
 	Assert-Contains $invalidPcmOutput 'PCM mode requires'
+
+	# RemSound always encrypts, and the relay carries one direction, so both of
+	# these have to be refused before a socket is ever opened.
+	$missingPassword = (& $helperExe --transport remsound --role subscriber 2>&1) -join "`n"
+	if ($LASTEXITCODE -eq 0) {
+		throw 'Helper accepted a RemSound connection with no password'
+	}
+	Assert-Contains $missingPassword 'always encrypted'
+	$duplexOnRelay = (& $helperExe --role duplex --host localhost --key test --test-tone 2>&1) -join "`n"
+	if ($LASTEXITCODE -eq 0) {
+		throw 'Helper accepted duplex over the one-way relay server'
+	}
+	Assert-Contains $duplexOnRelay 'remsound'
+
+	Write-Host 'Checking microphone and RemSound discovery commands...'
+	$inputDeviceJson = (& $helperExe --list-input-devices) -join "`n"
+	if ($LASTEXITCODE -ne 0) {
+		throw "Helper --list-input-devices failed with exit code $LASTEXITCODE"
+	}
+	$inputDevicePayload = $inputDeviceJson | ConvertFrom-Json
+	if ($inputDevicePayload.event -ne 'input_devices' -or $null -eq $inputDevicePayload.devices) {
+		throw 'Helper --list-input-devices did not return an input_devices payload'
+	}
+	# Zero peers is the normal answer on a quiet network; what matters is that the
+	# command completes and reports a list the add-on can read.
+	$peerJson = (& $helperExe --discover-peers --discover-seconds 1) -join "`n"
+	if ($LASTEXITCODE -ne 0) {
+		throw "Helper --discover-peers failed with exit code $LASTEXITCODE"
+	}
+	$peerPayload = $peerJson | ConvertFrom-Json
+	if ($peerPayload.event -ne 'peers' -or $null -eq $peerPayload.peers) {
+		throw 'Helper --discover-peers did not return a peers payload'
+	}
 
 	$python = Get-Command python -ErrorAction SilentlyContinue
 	if ($null -eq $python) {

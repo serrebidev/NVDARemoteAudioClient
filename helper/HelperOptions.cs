@@ -3,6 +3,17 @@ namespace NVDARemoteAudioHelper;
 internal sealed class HelperOptions
 {
 	public ConnectionRole Role { get; private init; } = ConnectionRole.Subscriber;
+	public AudioTransport Transport { get; private init; } = AudioTransport.NvdaRelay;
+	public IReadOnlyList<RemPeerSpec> Peers { get; private init; } = [];
+	public IReadOnlyList<string> PeerNames { get; private init; } = [];
+	public int LocalPort { get; private init; } = RemPacket.DefaultPort;
+	public int DiscoveryPort { get; private init; } = RemPacket.DiscoveryPort;
+	public string DeviceName { get; private init; } = Environment.MachineName;
+	public bool AllowRemoteControl { get; private init; }
+	public string CaptureDeviceId { get; private init; } = "";
+	public bool ListInputDevices { get; private init; }
+	public bool DiscoverPeers { get; private init; }
+	public int DiscoverSeconds { get; private init; } = 4;
 	public string Host { get; private init; } = "127.0.0.1";
 	public int Port { get; private init; } = 6838;
 	public string Key { get; private init; } = "";
@@ -34,9 +45,24 @@ internal sealed class HelperOptions
 		NVDARemoteAudioHelper
 
 		Required:
-		  --role publisher|subscriber
-		  --host <server host>
-		  --key <NVDA Remote key>
+		  --role publisher|subscriber|duplex
+		  --host <server host>   (audio server connections only)
+		  --key <NVDA Remote key> (audio server connections only)
+
+		Transport:
+		  --transport nvda|remsound
+		                        nvda (default) uses an NVDARemoteAudioServer relay.
+		                        remsound talks peer to peer with the RemSound apps for
+		                        Windows, iPhone and Android, and needs a password.
+		  --peers <list>         RemSound: comma-separated host[:port] to send to and
+		                        accept audio from; a RemSound relay host works too
+		  --peer-names <list>    RemSound: comma-separated device names found on the network
+		  --local-port <port>    RemSound UDP port. Default: 47830
+		  --discovery-port <port>
+		                        RemSound discovery port, 0 to turn discovery off. Default: 47821
+		  --device-name <name>   Name other RemSound devices see. Default: computer name
+		  --allow-remote-control Let RemSound peers that share the password change this
+		                        computer's volume
 
 		Common:
 		  --port <port>          Default: 6838
@@ -52,11 +78,17 @@ internal sealed class HelperOptions
 		  --buffer-ms <ms>       Subscriber maximum playback buffer. Default: 450
 		  --list-audio-apps      List applications with active audio sessions as JSON
 		  --list-output-devices  List active playback devices as JSON
+		  --list-input-devices   List active recording devices as JSON
+		  --discover-peers       Listen for RemSound devices and list them as JSON
+		  --discover-seconds <n> How long --discover-peers listens. Default: 4
 
 		Publisher:
 		  --exclude-pid <pid>    NVDA process ID to exclude from captured system audio
 		  --include-process-name <name>
 		                        Send only this application's audio (process name, no .exe)
+		  --capture-device-id <id>
+		                        Send a microphone or other recording device ("default"
+		                        for the Windows default) instead of playback audio
 		  --test-tone            Send a generated tone instead of capturing audio
 
 		Subscriber:
@@ -87,7 +119,8 @@ internal sealed class HelperOptions
 			}
 
 			var optionName = arg[2..];
-			if (optionName is "help" or "test-tone" or "disable-fec" or "list-audio-apps" or "list-output-devices" or "self-test")
+			if (optionName is "help" or "test-tone" or "disable-fec" or "list-audio-apps" or "list-output-devices" or "self-test"
+				or "list-input-devices" or "discover-peers" or "allow-remote-control")
 			{
 				flags.Add(optionName);
 				continue;
@@ -117,13 +150,40 @@ internal sealed class HelperOptions
 		{
 			return new HelperOptions { SelfTest = true };
 		}
+		if (flags.Contains("list-input-devices"))
+		{
+			return new HelperOptions { ListInputDevices = true };
+		}
+		if (flags.Contains("discover-peers"))
+		{
+			return new HelperOptions
+			{
+				DiscoverPeers = true,
+				DiscoverSeconds = ParseInt(values, "discover-seconds", 4, 1, 30),
+				DiscoveryPort = ParseInt(values, "discovery-port", RemPacket.DiscoveryPort, 1, 65535),
+				DeviceName = ParseDeviceName(values),
+			};
+		}
+
+		var transportText = values.GetValueOrDefault("transport", "nvda");
+		var transport = transportText.Equals("nvda", StringComparison.OrdinalIgnoreCase)
+			? AudioTransport.NvdaRelay
+			: transportText.Equals("remsound", StringComparison.OrdinalIgnoreCase)
+				? AudioTransport.RemSound
+				: throw new ArgumentException("--transport must be nvda or remsound.");
 
 		var roleText = Required(values, "role");
 		var role = roleText.Equals("publisher", StringComparison.OrdinalIgnoreCase)
 			? ConnectionRole.Publisher
 			: roleText.Equals("subscriber", StringComparison.OrdinalIgnoreCase)
 				? ConnectionRole.Subscriber
-				: throw new ArgumentException("--role must be publisher or subscriber.");
+				: roleText.Equals("duplex", StringComparison.OrdinalIgnoreCase)
+					? ConnectionRole.Duplex
+					: throw new ArgumentException("--role must be publisher, subscriber or duplex.");
+		if (role == ConnectionRole.Duplex && transport != AudioTransport.RemSound)
+		{
+			throw new ArgumentException("Sending and receiving at once needs --transport remsound; the audio server carries one direction.");
+		}
 
 		var port = ParseInt(values, "port", 6838, 1, 65535);
 		var bitrate = ParseInt(values, "bitrate", 96000, 16000, 510000);
@@ -158,6 +218,11 @@ internal sealed class HelperOptions
 				? AudioPayloadCodec.Pcm16
 				: throw new ArgumentException("--codec must be opus or pcm.");
 		var recordFolder = values.GetValueOrDefault("record-folder", "").Trim();
+		var captureDeviceId = values.GetValueOrDefault("capture-device-id", "").Trim();
+		if (captureDeviceId.Length > 512 || captureDeviceId.Any(char.IsControl))
+		{
+			throw new ArgumentException("--capture-device-id is not a device ID.");
+		}
 		var testTone = flags.Contains("test-tone");
 		var opusFec = !flags.Contains("disable-fec");
 
@@ -170,9 +235,62 @@ internal sealed class HelperOptions
 			throw new ArgumentException("--include-process-name must be a process name without a path.");
 		}
 
-		if (role == ConnectionRole.Publisher && !testTone && excludePid <= 0 && string.IsNullOrWhiteSpace(captureProcessName))
+		if (role != ConnectionRole.Subscriber && !testTone && excludePid <= 0 &&
+			string.IsNullOrWhiteSpace(captureProcessName) && captureDeviceId.Length == 0)
 		{
-			throw new ArgumentException("Publisher mode requires --exclude-pid or --include-process-name unless --test-tone is used.");
+			throw new ArgumentException("Publisher mode requires --exclude-pid, --include-process-name or --capture-device-id unless --test-tone is used.");
+		}
+
+		if (transport == AudioTransport.RemSound)
+		{
+			if (string.IsNullOrEmpty(password))
+			{
+				throw new ArgumentException("RemSound connections are always encrypted. Set an encryption password, the same one as on the other device.");
+			}
+			var peers = new List<RemPeerSpec>();
+			foreach (var entry in SplitList(values.GetValueOrDefault("peers", "")))
+			{
+				if (!RemPeerSpec.TryParse(entry, out var peer))
+				{
+					throw new ArgumentException($"'{entry}' is not a host name or address.");
+				}
+				peers.Add(peer);
+			}
+			var peerNames = SplitList(values.GetValueOrDefault("peer-names", ""))
+				.Where(name => name.Length <= 128 && !name.Any(char.IsControl))
+				.ToList();
+			return new HelperOptions
+			{
+				Role = role,
+				Transport = transport,
+				Host = "",
+				Key = "",
+				Peers = peers,
+				PeerNames = peerNames,
+				LocalPort = ParseInt(values, "local-port", RemPacket.DefaultPort, 1, 65535),
+				DiscoveryPort = ParseInt(values, "discovery-port", RemPacket.DiscoveryPort, 0, 65535),
+				DeviceName = ParseDeviceName(values),
+				AllowRemoteControl = flags.Contains("allow-remote-control"),
+				ExcludePid = excludePid,
+				CaptureProcessName = captureProcessName,
+				CaptureDeviceId = captureDeviceId,
+				OutputDeviceId = outputDeviceId,
+				ReceiveVolume = receiveVolume,
+				ReceivePan = receivePan,
+				BassDb = bassDb,
+				MidDb = midDb,
+				TrebleDb = trebleDb,
+				Password = password,
+				Codec = codec,
+				RecordFolder = recordFolder,
+				Bitrate = bitrate,
+				PrebufferMs = prebufferMs,
+				OutputLatencyMs = outputLatencyMs,
+				PlaybackBufferMs = playbackBufferMs,
+				OpusFrameMs = opusFrameMs,
+				OpusFec = opusFec,
+				TestTone = testTone,
+			};
 		}
 
 		var key = Required(values, "key");
@@ -193,6 +311,7 @@ internal sealed class HelperOptions
 			Key = key,
 			ExcludePid = excludePid,
 			CaptureProcessName = captureProcessName,
+			CaptureDeviceId = captureDeviceId,
 			OutputDeviceId = outputDeviceId,
 			ReceiveVolume = receiveVolume,
 			ReceivePan = receivePan,
@@ -210,6 +329,22 @@ internal sealed class HelperOptions
 			OpusFec = opusFec,
 			TestTone = testTone,
 		};
+	}
+
+	private static List<string> SplitList(string text) =>
+		text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.ToList();
+
+	private static string ParseDeviceName(Dictionary<string, string> values)
+	{
+		var name = values.GetValueOrDefault("device-name", "").Trim();
+		name = new string(name.Where(c => !char.IsControl(c)).ToArray());
+		if (name.Length > 64)
+		{
+			name = name[..64];
+		}
+		return name.Length > 0 ? name : Environment.MachineName;
 	}
 
 	private static string Required(Dictionary<string, string> values, string key)

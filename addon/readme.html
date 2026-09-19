@@ -6,13 +6,19 @@
 </head>
 <body>
 <h1>NVDA Remote Audio Client</h1>
-<p>This add-on connects to <a href="https://github.com/haitun001/NVDARemoteAudioServer">NVDARemoteAudioServer</a> to send or receive secure low-latency audio between two Windows machines. It can send all system audio except NVDA or isolate one selected application. NVDA speech itself stays on NVDA Remote.</p>
+<p>This add-on sends or receives secure low-latency audio between two Windows machines, and to and from the <a href="https://github.com/Ednunp/RemSound">RemSound</a> apps on Windows, iPhone, Android, and Mac. It can send all system audio except NVDA, isolate one selected application, or send a microphone. NVDA speech itself stays on NVDA Remote.</p>
 
-<h2>First-time setup</h2>
+<p>There are two connection types, chosen under <strong>Connection type</strong> in settings:</p>
+<ul>
+  <li><strong>NVDA Remote Audio server</strong> — the default. Both machines connect to a relay server by host name, port 6838, and a shared room name.</li>
+  <li><strong>RemSound peer to peer</strong> — this machine talks directly to a RemSound device. There is no server and no room name, only a shared encryption password. UDP port 47830 is used, with UDP 47821 for discovery.</li>
+</ul>
+
+<h2>Setup through the audio server</h2>
 <ol>
   <li>Install this add-on on both machines.</li>
   <li>On the machine that should send audio: open <strong>NVDA menu &gt; Tools &gt; NVDA Remote Audio &gt; Install audio server (this machine sends audio)...</strong> The add-on downloads the latest <a href="https://github.com/haitun001/NVDARemoteAudioServer">NVDARemoteAudioServer</a> from GitHub, installs it, starts it, and registers a per-user startup entry so it survives reboots. It will also prompt for UAC to add Windows Firewall inbound allow rules for TCP and UDP port 6838. If you decline UAC, run the helper menu item <em>Add firewall rules for audio server...</em> later, or open the port manually.</li>
-  <li>On both machines, open <strong>NVDA menu &gt; Preferences &gt; Settings &gt; NVDA Remote Audio</strong>.</li>
+  <li>On both machines, open <strong>NVDA menu &gt; Preferences &gt; Settings &gt; NVDA Remote Audio</strong> and leave <strong>Connection type</strong> on <strong>NVDA Remote Audio server</strong>.</li>
   <li>Set the same <strong>Host</strong>, <strong>Port</strong> (6838 by default), and <strong>Session key / room name</strong> on both. The key is required, but it is not an encryption password.</li>
   <li>Set the same <strong>End-to-end encryption password</strong> on both machines. This is strongly recommended.</li>
   <li>Optionally choose <strong>Audio to send</strong> on the sending machine and <strong>Receive through</strong> plus <strong>Receive volume</strong> on the receiving machine.</li>
@@ -21,30 +27,44 @@
 
 <p>Inbound TCP and UDP <strong>port 6838</strong> on the sending machine must be reachable by the receiving machine. Windows Firewall may prompt the first time the server runs, or you can pre-allow it.</p>
 
+<h2>Setup with a RemSound device</h2>
+<ol>
+  <li>Set the <strong>same encryption password</strong> on both devices. RemSound always encrypts, so there is no unencrypted mode, and the settings panel will not save a RemSound connection without a password.</li>
+  <li>On this computer, set <strong>Connection type</strong> to <strong>RemSound peer to peer</strong>.</li>
+  <li>To choose devices by name, open <strong>NVDA menu &gt; Tools &gt; NVDA Remote Audio &gt; Find RemSound devices on this network...</strong> with the RemSound app open on the other device, and tick it in the list. Each entry says whether the device sends, receives, or both, and lists every address it answered on. Choosing a device switches the connection type to RemSound for you.</li>
+  <li>If discovery cannot reach the device — over Tailscale or the open internet, for example — type its address or Tailscale name into <strong>RemSound devices by address</strong> instead.</li>
+  <li>In the other device's own RemSound app, tick this computer the same way it appears there. <strong>Name other RemSound devices see for this computer</strong> changes what that name is.</li>
+  <li>Choose <strong>Receive remote audio</strong>, <strong>Send this computer's audio</strong>, or <strong>Send and receive at the same time (RemSound)</strong>. The two-way choice is the one to pick to talk to a phone in both directions; it is only offered on a RemSound connection, because the relay server carries audio one way.</li>
+</ol>
+
+<p>RemSound connections need no relay server and no port 6838 firewall rule. Allow <strong>UDP port 47830</strong> on both devices, and <strong>UDP 47821</strong> if you want discovery to find them. On an iPhone, allow the RemSound app local network access, or it cannot be found or reached.</p>
+
 <h2>How "Automatic" startup works</h2>
-<p>If <code>C:\NVDARemoteAudioServer\NVDARemoteAudioServer.exe</code> or <code>%LOCALAPPDATA%\NVDARemoteAudioServer\NVDARemoteAudioServer.exe</code> exists on a machine, that machine sends. Otherwise it receives. Override this by changing <strong>Startup action</strong> in settings.</p>
+<p>If <code>C:\NVDARemoteAudioServer\NVDARemoteAudioServer.exe</code> or <code>%LOCALAPPDATA%\NVDARemoteAudioServer\NVDARemoteAudioServer.exe</code> exists on a machine, that machine sends. Otherwise it receives. Override this by changing <strong>Startup action</strong> in settings. A RemSound connection never needs the server installed, and <strong>Send and receive at the same time (RemSound)</strong> is chosen explicitly rather than automatically.</p>
 
 <h2>Latency profiles</h2>
 <ul>
   <li><strong>LAN</strong> — 5 ms Opus packets and the lowest buffer (15/15/120 ms).</li>
   <li><strong>Tailscale</strong> — 10 ms Opus packets with a small extra buffer (50/20/250 ms).</li>
   <li><strong>Internet</strong> — 10 ms Opus packets with the most stable low-latency buffer (100/30/600 ms).</li>
-  <li><strong>Automatic</strong> — picked from the host you set: LAN for private/loopback IPs, Tailscale for 100.64.0.0/10 or *.ts.net, Internet for anything else.</li>
+  <li><strong>Automatic</strong> — picked from the devices you set: LAN for the Windows default, private and loopback addresses, or any device found by discovery; Tailscale for 100.64.0.0/10 or *.ts.net; Internet for anything else.</li>
 </ul>
 
 <h2>Controls and status</h2>
-<p>The Tools menu provides receive, send, reconnect, disconnect, status, this computer's address, copy diagnostics, server install, server update/repair, firewall, server remove/disable, and settings actions. Receive, send, disconnect, reconnect, status, this computer's address, and copy diagnostics are also available as unbound NVDA Input Gestures under the <strong>NVDA Remote Audio</strong> category. While you are controlling another machine with NVDA Remote, those gestures stay local instead of being forwarded as keystrokes.</p>
+<p>The Tools menu provides receive, send, send and receive at the same time, reconnect, disconnect, status, this computer's address, find RemSound devices, copy diagnostics, server install, server update/repair, firewall, server remove/disable, and settings actions. Receive, send, send and receive at the same time, disconnect, reconnect, status, this computer's address, find RemSound devices, copy diagnostics, and every volume and remote-control command are also available as unbound NVDA Input Gestures under the <strong>NVDA Remote Audio</strong> category. While you are controlling another machine with NVDA Remote, those gestures stay local instead of being forwarded as keystrokes. Nothing in this list is given a default key, so no existing shortcut is taken over.</p>
 <p><strong>This computer's address for the other computer</strong> speaks and copies this machine's Tailscale address, local network address, computer name, and port, so you can set up the other computer without leaving NVDA to look them up.</p>
-<p>Version 0.2.2 safely removes the stale Remote Audio menu item while retaining its detached wx wrapper until NVDA exits, preventing Reload Add-ons from terminating NVDA.</p>
+<p><strong>Find RemSound devices on this network...</strong> listens for a few seconds and lists every RemSound device that answered, saying for each one whether it sends, receives, or both, and every address it answered on. Devices are grouped by name, so a phone that answers on both Wi-Fi and Tailscale appears once. Tick the devices to use and the connection type becomes RemSound if it was not already. The list is a standard multi-select list, so space bar and the arrow keys are all you need.</p>
+<p>Received volume, mute, and the other device's volume can be changed from a gesture while audio is running, with no reconnect and no return to settings. <strong>Raise/Lower/Mute received remote audio</strong> affect what you hear. <strong>Raise/Lower the other device's RemSound volume</strong>, <strong>Mute or unmute RemSound on the other device</strong>, and the three matching Windows-volume commands ask the other device to change, and only work if that device has allowed remote control. Lowering the receive volume while nothing is playing changes the saved level for the next connection instead of doing nothing.</p>
 <p>If the relay server restarts or a network heartbeat fails, the helper releases the old audio and network session and reconnects automatically. A manual reconnect is still available when you change routing or connection settings.</p>
 <p>In settings, clear <strong>Announce connection status messages</strong> to keep routine connect/listen/capture/stopped messages quiet. Errors and explicit status commands still speak. <strong>Use Opus packet-loss recovery</strong> controls Opus in-band FEC, which is enabled by default. Enable <strong>Verbose diagnostic logging</strong> when you need helper timing details in NVDA's log.</p>
-<p><strong>Audio to send</strong> defaults to all system audio with NVDA excluded. To send one application, start it and make it play or open audio before opening settings. If that application restarts, reconnect remote audio so its new process is selected. <strong>Receive through</strong> can follow the Windows default or pin playback to an active endpoint. When it follows the Windows default, it keeps following it for the whole session: unplugging headphones, a Bluetooth headset dropping, or changing the Windows output moves playback to the device that is now current instead of leaving it on the old one. <strong>Receive volume</strong> ranges from 0 to 200 percent; 100 percent is unchanged.</p>
-<p><strong>Audio quality</strong> offers adaptive Opus, 5 ms live Opus, broadcast-quality Opus, and uncompressed PCM. The receiver also has pan and three-band bass, midrange, and treble controls. Received audio can be recorded to timestamped WAV files. Named connection profiles can be saved, loaded, and deleted from the Tools menu.</p>
+<p><strong>Audio to send</strong> defaults to all system audio with NVDA excluded. To send one application, start it and make it play or open audio before opening settings. If that application restarts, reconnect remote audio so its new process is selected. To send a microphone instead — the way a phone hears this computer — choose <strong>Microphone: Windows default recording device</strong> or a named recording device from the same list. <strong>Receive through</strong> can follow the Windows default or pin playback to an active endpoint. When it follows the Windows default, it keeps following it for the whole session: unplugging headphones, a Bluetooth headset dropping, or changing the Windows output moves playback to the device that is now current instead of leaving it on the old one. <strong>Receive volume</strong> ranges from 0 to 200 percent; 100 percent is unchanged.</p>
+<p><strong>Audio quality</strong> offers adaptive Opus, 5 ms live Opus, broadcast-quality Opus, and uncompressed PCM. On a RemSound connection the same choices are used with RemSound's own encoding: Opus at 48 kHz stereo, or 24-bit PCM in 2.5 ms frames, with the format re-announced four times a second so a device that joins late still starts playing. The receiver also has pan and three-band bass, midrange, and treble controls. Received audio can be recorded to timestamped WAV files. Named connection profiles can be saved, loaded, and deleted from the Tools menu, and they remember the connection type and the RemSound devices you chose.</p>
 
 <h2>When the two computers disagree</h2>
-<p>If the sending computer's add-on is a different version and the two can no longer understand each other's audio, the receiving computer says so and names <em>which</em> computer to update, instead of simply going quiet. A wrong end-to-end encryption password, audio damaged on the network, and a version mismatch are reported as three separate problems, because each is fixed in a different place. A single packet damaged in transit is never enough to end a session.</p>
+<p>If the sending computer's add-on is a different version and the two can no longer understand each other's audio, the receiving computer says so and names <em>which</em> computer to update, instead of simply going quiet. A wrong end-to-end encryption password, audio damaged on the network, and a version mismatch are reported as three separate problems, because each is fixed in a different place. A single packet damaged in transit is never enough to end a session. A RemSound sender whose password differs is reported the same way, as a password problem rather than silence.</p>
 
-<h2>Privacy</h2>
-<p>Publisher mode uses Windows process-loopback exclusion to drop NVDA from the system mix, or process-loopback inclusion to isolate the selected application's process tree. When a password is set, every audio packet is encrypted and authenticated end to end with AES-256-GCM; the relay cannot hear it. Leaving the password empty enables unencrypted compatibility mode and should only be used on trusted networks or inside a VPN.</p>
+<h2>Privacy and remote control</h2>
+<p>Publisher mode uses Windows process-loopback exclusion to drop NVDA from the system mix, or process-loopback inclusion to isolate the selected application's process tree. When a password is set, every audio packet is encrypted and authenticated end to end with AES-256-GCM; the relay cannot hear it, and a RemSound peer cannot hear it without the same password. Leaving the password empty enables unencrypted compatibility mode and should only be used on trusted networks or inside a VPN — but only on the audio-server connection type, because RemSound has no unencrypted mode.</p>
+<p>Another device can change this computer's Windows volume only if <strong>Let RemSound devices that share the password change this computer's volume</strong> is ticked on this computer. Those requests are sealed with the audio key, refused if they are more than ten minutes old, and refused if they are replayed. Leave the setting off and no RemSound peer can touch this computer's volume at all.</p>
 </body>
 </html>

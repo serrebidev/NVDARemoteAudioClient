@@ -142,6 +142,7 @@ internal static class HelperSelfTest
 		}
 
 		HelperSelfTestCases.RunAll();
+		RemSoundSelfTestCases.RunAll();
 
 		var endpointFollowing = RunEndpointFollowingTest();
 
@@ -162,6 +163,7 @@ internal static class HelperSelfTest
 			["frame_queue"] = "passed",
 			["option_parsing"] = "passed",
 			["payload_edge_cases"] = "passed",
+			["remsound_compatibility"] = "passed",
 			["endpoint_following"] = endpointFollowing,
 		});
 	}

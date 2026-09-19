@@ -18,6 +18,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import types
 
 # Importing the plugin out of addon/ must not leave .pyc files behind: the
@@ -112,15 +113,50 @@ def installNVDAStubs(configPath):
 
 	appArgs = types.SimpleNamespace(configPath=configPath)
 
+	class FakeStdin:
+		"""Captures what the plugin writes to the helper's standard input."""
+
+		def __init__(self, written):
+			self._written = written
+
+		def write(self, text):
+			self._written.append(text)
+
+		def flush(self):
+			pass
+
+		def close(self):
+			pass
+
+	class FakeStdout:
+		"""The helper's output pipe: silent, and open as long as the helper runs.
+
+		A pipe that ended at once would let the reader thread finish and clear the
+		running process out from under the checks, which is not what a live helper
+		does. A pipe that never ended would strand the reader thread instead.
+		"""
+
+		def __init__(self, process):
+			self._process = process
+
+		def __iter__(self):
+			while self._process.returncode is None:
+				time.sleep(0.01)
+			return iter(())
+
+		def close(self):
+			pass
+
 	class FakePopen:
 		"""Captures the command line and environment the plugin would launch with."""
 
 		def __init__(self, args, **kwargs):
+			self.written = []
+			self.returncode = None
 			launched.append({"args": list(args), "env": kwargs.get("env")})
 			self.args = list(args)
-			self.stdin = types.SimpleNamespace(close=lambda: None)
-			self.stdout = []
-			self.returncode = None
+			self.stdin = FakeStdin(self.written)
+			self.stdout = FakeStdout(self)
 
 		def poll(self):
 			return self.returncode
@@ -344,6 +380,7 @@ def testStartupRoles(mod):
 		mod.server_installer.is_installed = lambda: False
 		check("a machine without the relay receives", mod._resolveStartupMode({"startupMode": "auto"}), "subscriber")
 		check("an explicit role wins", mod._resolveStartupMode({"startupMode": "publisher"}), "publisher")
+		check("an explicit duplex role wins", mod._resolveStartupMode({"startupMode": "duplex"}), "duplex")
 		check("disabled stays disabled", mod._resolveStartupMode({"startupMode": "disabled"}), "disabled")
 	finally:
 		mod.server_installer.is_installed = original
@@ -528,6 +565,12 @@ def testLabelsCoverEveryChoice(mod):
 	for quality in mod.QUALITY_MODES:
 		label = mod._qualityModeLabel(quality)
 		check_true("quality mode {0!r} has a label".format(quality), label and label.strip())
+	for transport in mod.TRANSPORTS:
+		label = mod._transportLabel(transport)
+		check_true("connection type {0!r} has a label".format(transport), label and label.strip())
+	for role in ("subscriber", "publisher", "duplex"):
+		label = mod._roleLabel(role)
+		check_true("role {0!r} has a label".format(role), label and label.strip())
 
 	# Distinct values must not share a label, or two different settings would be
 	# indistinguishable when read aloud.
@@ -535,9 +578,15 @@ def testLabelsCoverEveryChoice(mod):
 		("startup mode", mod.STARTUP_MODES, mod._startupModeLabel),
 		("latency profile", mod.LATENCY_PROFILES, mod._latencyProfileLabel),
 		("quality mode", mod.QUALITY_MODES, mod._qualityModeLabel),
+		("connection type", mod.TRANSPORTS, mod._transportLabel),
 	):
 		labels = [labeller(v) for v in values]
 		check("every {0} label is distinct".format(name), len(set(labels)), len(labels))
+
+	# A duplex connection is a role the user has to be able to tell from the other
+	# two when the status is spoken.
+	named = [mod._roleLabel(role) for role in ("subscriber", "publisher", "duplex")]
+	check("the role labels are distinct", len(set(named)), len(named))
 
 	# Every latency profile the resolver can return must have settings behind it.
 	for profile in mod.LATENCY_PROFILES:
@@ -695,6 +744,24 @@ def testDiagnosticsNeverLeakThePassword(mod):
 		check_true("the report includes the helper path", "Helper path" in text)
 		check_true("the report includes the resolved latency profile", "Latency profile" in text)
 		check_true("every line is printable", all(line.isprintable() for line in text.splitlines()))
+
+		# A bug report about a RemSound connection needs to show which devices were
+		# named, and the password must stay out of it in this shape too.
+		config["transport"] = "remsound"
+		config["remSoundPeers"] = "192.168.1.20"
+		config["remSoundDevices"] = ["iPhone"]
+		config["remSoundDeviceName"] = "Studio PC"
+		config["allowRemoteControl"] = True
+		config["captureDevice"] = "default"
+		mod._saveConfig(config)
+		text = plugin._diagnosticsText()
+		check_true("the report names the connection type", "Connection type: remsound" in text)
+		check_true("the report names the RemSound peers", "192.168.1.20" in text)
+		check_true("the report names the chosen RemSound devices", "iPhone" in text)
+		check_true("the report names this computer to RemSound", "Studio PC" in text)
+		check_true("the report says remote control is allowed", "Accept remote volume commands: True" in text)
+		check_true("the report names the microphone", "recording device default" in text)
+		check_true("the password is still absent", "a-very-secret-password" not in text)
 	finally:
 		os.remove(mod.CONFIG_PATH)
 
@@ -717,6 +784,220 @@ def testServerStatusIsReadable(mod):
 	check("the escaped path is still one quoted argument", hostile.count(chr(34)) - hostile.count(chr(92) + chr(34)), 2)
 
 
+def testRemSoundPeerParsing(mod):
+	"""Malformed RemSound entries are dropped here, not handed to the helper.
+
+	The helper refuses to start on an entry it cannot parse, so anything kept here
+	becomes a connection that never happens, with a settings field showing text the
+	helper will not accept.
+	"""
+	check("an address and a host with a port are kept",
+		mod._parsePeerList("192.168.1.20, relay.example.com:5000"),
+		["192.168.1.20", "relay.example.com:5000"])
+	check("semicolons separate entries too",
+		mod._parsePeerList("192.168.1.20; pc.local"), ["192.168.1.20", "pc.local"])
+	check("entries are trimmed", mod._parsePeerList("  pc.local  "), ["pc.local"])
+	check("duplicates are dropped case-insensitively",
+		mod._parsePeerList("Pc.local, pc.local, PC.LOCAL"), ["Pc.local"])
+	check("a list is accepted as well as text",
+		mod._parsePeerList(["pc.local", "192.168.1.20"]), ["pc.local", "192.168.1.20"])
+	check("empty text yields no peers", mod._parsePeerList(""), [])
+	check("None yields no peers", mod._parsePeerList(None), [])
+	check("a port at each limit is kept",
+		mod._parsePeerList("pc:1, pc2:65535"), ["pc:1", "pc2:65535"])
+
+	for entry in ("bad host", "pc:0", "pc:70000", "pc:abc", "a:b:c", "pc\tlocal", "x" * 300, "pc\nlocal"):
+		check("rejected: {0!r}".format(entry), mod._parsePeerList(entry), [])
+
+	# One bad entry must not discard the good ones beside it, or a single typo
+	# silently drops every working device.
+	check("good entries survive a bad neighbour",
+		mod._parsePeerList("pc.local, bad host, 192.168.1.20"), ["pc.local", "192.168.1.20"])
+
+
+def testRemSoundDeviceNames(mod):
+	check("a comma-separated list is split", mod._parseDeviceNames("iPhone, Pixel 8"), ["iPhone", "Pixel 8"])
+	check("a list is accepted", mod._parseDeviceNames(["iPhone", "Pixel 8"]), ["iPhone", "Pixel 8"])
+	check("duplicates are dropped case-insensitively",
+		mod._parseDeviceNames(["iPhone", "iphone"]), ["iPhone"])
+	check("blanks are dropped", mod._parseDeviceNames(",,  ,"), [])
+	check("a non-list yields nothing", mod._parseDeviceNames(42), [])
+	check("control characters are removed", mod._parseDeviceNames("iPho\tne\n"), ["iPhone"])
+	# A comma inside a chosen name would split into two devices when the helper
+	# reads the list back, naming a device that does not exist.
+	check("a comma inside a name is removed", mod._parseDeviceNames(["a,b"]), ["ab"])
+	check("names are capped at 128 characters", len(mod._parseDeviceNames(["n" * 300])[0]), 128)
+
+
+def testConnectionProblems(mod):
+	"""The reason a connection cannot start, before the helper is ever launched."""
+	check("a RemSound connection without a password is refused",
+		mod._connectionProblem("duplex", {"transport": "remsound", "password": ""}) is not None, True)
+	check("a RemSound connection with a password is allowed",
+		mod._connectionProblem("duplex", {"transport": "remsound", "password": "plexbox"}), None)
+	check("duplex over the relay is refused",
+		mod._connectionProblem("duplex", {"transport": "nvda", "key": "room"}) is not None, True)
+	check("an invalid key is still refused",
+		mod._connectionProblem("subscriber", {"transport": "nvda", "key": "bad\tkey"}) is not None, True)
+	check("a valid relay subscriber passes",
+		mod._connectionProblem("subscriber", {"transport": "nvda", "key": "living room"}), None)
+	# RemSound always encrypts, but the relay's unencrypted compatibility mode is
+	# a room with no password and must stay reachable.
+	check("an unencrypted relay connection is still allowed",
+		mod._connectionProblem("subscriber", {"transport": "nvda", "key": "room", "password": ""}), None)
+
+
+def testRemSoundHelperArguments(mod):
+	"""The exact command line and environment a RemSound connection launches with."""
+	config = mod._normalizeConfig({
+		"transport": "remsound",
+		"password": "plexbox",
+		"remSoundPeers": "192.168.1.20, bad host",
+		"remSoundDevices": "iPhone, Pixel 8",
+		"remSoundDeviceName": "Studio PC",
+		"allowRemoteControl": True,
+		"captureDevice": "default",
+		"latencyProfile": "lan",
+		"qualityMode": "adaptive",
+		"receiveVolume": 130,
+	})
+	args, env = mod._helperArguments("duplex", config)
+	joined = " ".join(args)
+	check("the transport is named", args[args.index("--transport") + 1], "remsound")
+	check("the role is passed", args[args.index("--role") + 1], "duplex")
+	check("only valid peers are passed", args[args.index("--peers") + 1], "192.168.1.20")
+	check("chosen devices are passed", args[args.index("--peer-names") + 1], "iPhone,Pixel 8")
+	check("the name this computer shows is passed", args[args.index("--device-name") + 1], "Studio PC")
+	check_true("remote control is allowed when asked for", "--allow-remote-control" in args)
+	check("the microphone is passed", args[args.index("--capture-device-id") + 1], "default")
+	check_true("the password is not in the command line", "plexbox" not in joined)
+	check("the password travels in the environment instead",
+		env.get("NVDA_REMOTE_AUDIO_PASSWORD"), "plexbox")
+	check_true("a RemSound peer does not need a relay host", "--host" not in args)
+	check_true("a RemSound peer does not need a room key", "--key" not in args)
+	check_true("a duplex connection sends", "--bitrate" in args)
+	check_true("a duplex connection also receives", "--prebuffer-ms" in args)
+	check("the receive volume is passed", args[args.index("--receive-volume") + 1], "130")
+	# A selected microphone must replace system capture, not be added beside it.
+	check_true("a microphone is not also excluded by NVDA's PID", "--exclude-pid" not in args)
+
+	# A receiver needs nothing but the password, and must not be forced to name a
+	# peer before the other device is even switched on.
+	bare = mod._normalizeConfig({"transport": "remsound", "password": "plexbox"})
+	args, env = mod._helperArguments("subscriber", bare)
+	check_true("a bare receiver passes no peers", "--peers" not in args)
+	check("a bare receiver still carries the password",
+		env.get("NVDA_REMOTE_AUDIO_PASSWORD"), "plexbox")
+	check_true("remote control is off unless asked for", "--allow-remote-control" not in args)
+	check_true("a receiver does not send", "--bitrate" not in args)
+
+	# The relay path keeps its host and key and gains no RemSound switch at all.
+	relay = mod._normalizeConfig({
+		"transport": "nvda", "host": "studio.example", "key": "living room", "password": "hunter2",
+	})
+	args, env = mod._helperArguments("subscriber", relay)
+	check("the relay host is passed", args[args.index("--host") + 1], "studio.example")
+	check("the room key is passed", args[args.index("--key") + 1], "living room")
+	check_true("the relay path names no transport", "--transport" not in args)
+	check_true("the relay path has no RemSound peers", "--peers" not in args)
+	check_true("the relay path allows no remote control", "--allow-remote-control" not in args)
+
+
+def testLiveVolumeAndRemoteControl(mod):
+	"""Volume changed by a gesture, by the other device, and on the other device."""
+	volumes = []
+	client = mod.AudioClientProcess(None, volumes.append)
+	client._announceStatus = True
+
+	del spoken[:]
+	client._handleLine(json.dumps({
+		"event": "volume", "volume": 75, "muted": False, "source": "local",
+		"message": "Receive volume 75 percent.",
+	}))
+	check("a volume change is spoken", len(spoken), 1)
+	check_true("the new volume is what is said", "75" in spoken[0])
+	check("the volume is offered to the settings", volumes, [75])
+
+	del spoken[:]
+	client._handleLine(json.dumps({
+		"event": "volume", "volume": 40, "muted": False, "source": "remote", "peer": "iPhone",
+		"message": "Receive volume 40 percent.",
+	}))
+	check_true("a change made by the other device names it", "iPhone" in spoken[0])
+	check("the other device's change is remembered too", volumes[-1], 40)
+
+	del spoken[:]
+	client._handleLine(json.dumps({
+		"event": "volume", "volume": 40, "muted": True, "source": "local", "message": "Muted.",
+	}))
+	check_true("muting is said plainly", "mute" in spoken[0].lower())
+
+	# A Windows volume change is a different thing from the receive volume and must
+	# not be saved as one, or the next connection would start at the wrong level.
+	del spoken[:]
+	client._handleLine(json.dumps({
+		"event": "volume", "volume": 12, "muted": False, "system": True, "peer": "iPhone",
+		"message": "Windows volume 12 percent.",
+	}))
+	check_true("a Windows volume change names the device", "iPhone" in spoken[0])
+	check("a Windows volume change is not saved as the receive volume", volumes[-1], 40)
+
+	# A live command only reaches a helper that is running.
+	check("a command with nothing running is refused", client.sendCommand("volume 50"), False)
+
+	import subprocess as realSubprocess
+	originalPopen = realSubprocess.Popen
+	originalHelperPath = mod.HELPER_PATH
+	realSubprocess.Popen = fakePopen
+	standIn = os.path.join(os.path.dirname(mod.CONFIG_PATH), "NVDARemoteAudioHelper.exe")
+	with io.open(standIn, "w", encoding="utf-8") as f:
+		f.write("not a real helper")
+	mod.HELPER_PATH = standIn
+	try:
+		del launched[:]
+		running = mod.AudioClientProcess()
+		running.start("subscriber", mod._normalizeConfig({"transport": "remsound", "password": "plexbox"}))
+		check("the RemSound receiver was launched", len(launched), 1)
+		if launched:
+			process = running._process
+			check("a live command is accepted", running.sendCommand("volume-step -5"), True)
+			# The '!' matters: any other byte on the helper's input means "shut down".
+			check("the command is marked as a command, not a stop",
+				process.written, ["!volume-step -5\n"])
+			running.stop()
+			check("a stopped helper takes no more commands", running.sendCommand("volume 50"), False)
+	finally:
+		realSubprocess.Popen = originalPopen
+		mod.HELPER_PATH = originalHelperPath
+
+
+def testPeerGrouping(mod):
+	"""A device is chosen, not a network adapter."""
+	grouped = mod._groupPeers([
+		{"Name": "iPhone", "Address": "192.168.1.79", "CanSend": False, "CanReceive": True},
+		{"Name": "iphone", "Address": "100.90.80.70", "CanSend": True, "CanReceive": True},
+		{"Name": "Studio PC", "Address": "192.168.1.64", "CanSend": True, "CanReceive": False},
+		{"Name": "", "Address": "10.0.0.1", "CanSend": True, "CanReceive": True},
+		{"Name": "No address", "CanSend": True, "CanReceive": True},
+	])
+	check("one entry per device, and a nameless announcement is ignored", len(grouped), 3)
+	check("devices are sorted by name",
+		[entry["Name"] for entry in grouped], ["iPhone", "No address", "Studio PC"])
+	iphone = grouped[0]
+	check("every address a device answered on is kept",
+		iphone["Addresses"], ["192.168.1.79", "100.90.80.70"])
+	check("capabilities are the union across its addresses",
+		(iphone["CanSend"], iphone["CanReceive"]), (True, True))
+
+	check_true("a choosing label names the device", "iPhone" in mod._peerChoiceLabel(iphone))
+	check_true("a choosing label names its addresses", "100.90.80.70" in mod._peerChoiceLabel(iphone))
+	check_true("a label says a sender sends", "send" in mod._peerChoiceLabel(grouped[2]).lower())
+	idle = {"Name": "Tablet", "Addresses": ["192.168.1.90"], "CanSend": False, "CanReceive": False}
+	check_true("a label says an idle device is idle", "idle" in mod._peerChoiceLabel(idle).lower())
+	# A device with no address yet still has to be readable and choosable.
+	check_true("a device with no address still has a label", mod._peerChoiceLabel(grouped[1]).strip())
+
+
 def main():
 	scratch = tempfile.mkdtemp(prefix="remoteAudioSelfTest")
 	try:
@@ -735,6 +1016,12 @@ def main():
 			testSecretsNeverReachTheCommandLine,
 			testDiagnosticsNeverLeakThePassword,
 			testServerStatusIsReadable,
+			testRemSoundPeerParsing,
+			testRemSoundDeviceNames,
+			testConnectionProblems,
+			testRemSoundHelperArguments,
+			testLiveVolumeAndRemoteControl,
+			testPeerGrouping,
 		):
 			# A test that runs no checks reports "ok" while proving nothing. That is
 			# how a suite drifts into passing on an environment it never exercised:

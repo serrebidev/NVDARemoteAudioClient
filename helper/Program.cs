@@ -30,9 +30,21 @@ internal static class Program
 				HelperSelfTest.Run();
 				return 0;
 			}
+			if (options.ListInputDevices)
+			{
+				InputDeviceCapture.WriteInputDevices();
+				return 0;
+			}
+			if (options.DiscoverPeers)
+			{
+				await RemSoundDiscovery.WriteDiscoveredPeersAsync(options.DiscoveryPort, options.DiscoverSeconds, options.DeviceName);
+				return 0;
+			}
 
 			using var timerResolution = new SystemTimerResolution();
-			JsonLog.Write("status", $"Starting {options.Role} connection to {options.Host}:{options.Port}.");
+			JsonLog.Write("status", options.Transport == AudioTransport.RemSound
+				? $"Starting RemSound {options.Role.ToString().ToLowerInvariant()} connection."
+				: $"Starting {options.Role} connection to {options.Host}:{options.Port}.");
 
 			using var cts = new CancellationTokenSource();
 			Console.CancelKeyPress += (_, eventArgs) =>
@@ -45,6 +57,13 @@ internal static class Program
 			// byte) we treat it as a graceful shutdown request, so the session's
 			// IAsyncDisposable.DisposeAsync runs and WASAPI / sockets are released cleanly.
 			_ = Task.Run(() => WatchParentShutdownAsync(cts));
+			if (options.Transport == AudioTransport.RemSound)
+			{
+				// Peer to peer has no server session to lose, so there is nothing to
+				// reconnect: the socket stays open and peers come and go around it.
+				await RemSoundRunner.RunAsync(options, cts.Token);
+				return 0;
+			}
 			await RunWithReconnectAsync(options, cts.Token);
 			return 0;
 		}
@@ -150,16 +169,11 @@ internal static class Program
 				return;
 			}
 
-			var targetPid = options.ExcludePid;
-			var includeTargetTree = false;
-			var captureLabel = "System audio (NVDA excluded)";
-			if (!string.IsNullOrWhiteSpace(options.CaptureProcessName))
-			{
-				targetPid = AudioDeviceCatalog.FindAudioAppPid(options.CaptureProcessName);
-				includeTargetTree = true;
-				captureLabel = options.CaptureProcessName;
-			}
-			await AudioPublisher.RunCaptureAsync(session, targetPid, includeTargetTree, captureLabel, options.Bitrate, options.OpusFrameMs, options.OpusFec, options.Codec, options.Password, options.Key, cancellationToken);
+			await AudioPublisher.RunCaptureAsync(
+				session,
+				(queue, frameSamples, token) => CaptureSources.Start(options, queue, frameSamples, token),
+				CaptureSources.Describe(options),
+				options.Bitrate, options.OpusFrameMs, options.OpusFec, options.Codec, options.Password, options.Key, cancellationToken);
 			return;
 		}
 
@@ -186,7 +200,9 @@ internal static class Program
 		try
 		{
 			using var stdin = Console.OpenStandardInput();
-			var buffer = new byte[16];
+			var buffer = new byte[1];
+			var command = new List<byte>();
+			var inCommand = false;
 			while (!cts.IsCancellationRequested)
 			{
 				int read;
@@ -211,9 +227,34 @@ internal static class Program
 					return;
 				}
 
-				// Any byte from the parent is also a stop signal.
-				cts.Cancel();
-				return;
+				var value = buffer[0];
+				if (!inCommand)
+				{
+					if (value == (byte)LiveControls.CommandPrefix)
+					{
+						// A live command such as a volume change; see LiveControls.
+						inCommand = true;
+						command.Clear();
+						continue;
+					}
+					if (value is (byte)'\r' or (byte)'\n')
+					{
+						continue;
+					}
+					// Any other byte from the parent is a stop signal.
+					cts.Cancel();
+					return;
+				}
+				if (value == (byte)'\n')
+				{
+					inCommand = false;
+					LiveControls.Dispatch(System.Text.Encoding.UTF8.GetString(command.ToArray()));
+					continue;
+				}
+				if (command.Count < 1024)
+				{
+					command.Add(value);
+				}
 			}
 		}
 		catch

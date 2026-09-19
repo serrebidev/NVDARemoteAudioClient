@@ -44,6 +44,7 @@ internal static class AudioSubscriber
 			trebleDb);
 		using var payloadProtocol = new AudioPayloadProtocol(password, roomKey);
 		using var recorder = new ReceivedAudioRecorder(recordFolder, SampleRate, Channels);
+		using var liveVolume = LiveControls.RegisterPlayback(playback);
 		var decoder = OpusCodecFactory.CreateDecoder(SampleRate, Channels, TextWriter.Null);
 		var decoded = new float[MaxDecodedSamplesPerChannel * Channels];
 		var plaintext = new byte[session.MaxPayloadBytes];

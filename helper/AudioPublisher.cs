@@ -12,8 +12,7 @@ internal static class AudioPublisher
 
 	public static async Task RunCaptureAsync(
 		RemoteAudioSession session,
-		int targetPid,
-		bool includeTargetTree,
+		Func<AudioFrameQueue, int, CancellationToken, Task> startCapture,
 		string captureLabel,
 		int bitrate,
 		int opusFrameMilliseconds,
@@ -25,9 +24,8 @@ internal static class AudioPublisher
 	{
 		var packetSamplesPerChannel = FrameSamplesPerChannel(opusFrameMilliseconds);
 		var channelCapacity = Math.Max(2, 40 / opusFrameMilliseconds);
-		JsonLog.Write("status", includeTargetTree ? "Starting application capture." : "Starting system capture with NVDA audio excluded.", new Dictionary<string, object?>
+		JsonLog.Write("status", "Starting capture.", new Dictionary<string, object?>
 		{
-			[includeTargetTree ? "included_pid" : "excluded_pid"] = targetPid,
 			["capture_source"] = captureLabel,
 			["bitrate"] = bitrate,
 			["opus_frame_ms"] = opusFrameMilliseconds,
@@ -40,8 +38,7 @@ internal static class AudioPublisher
 		using var queue = new AudioFrameQueue(channelCapacity);
 
 		using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-		var capture = new ProcessLoopbackCapture(targetPid, includeTargetTree, packetSamplesPerChannel);
-		var captureTask = capture.RunAsync(queue, linkedCts.Token);
+		var captureTask = startCapture(queue, packetSamplesPerChannel, linkedCts.Token);
 		var encodeTask = EncodeAndSendLoopAsync(queue, session, bitrate, opusFrameMilliseconds, useInbandFec, codec, password, roomKey, linkedCts.Token);
 
 		var completed = await Task.WhenAny(captureTask, encodeTask);
