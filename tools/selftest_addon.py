@@ -363,13 +363,32 @@ def testLatencyProfiles(mod):
 	check("an explicit profile wins", mod._resolveLatencyProfile(
 		{"latencyProfile": "internet", "host": "127.0.0.1"}), "internet")
 
-	for profile in ("lan", "tailscale", "internet"):
+	for profile in [name for name in mod.LATENCY_PROFILES if name != "auto"]:
 		settings = mod.LATENCY_SETTINGS[profile]
 		check_true("{0} prebuffer is positive".format(profile), settings["prebufferMs"] > 0)
 		check_true(
 			"{0} buffer exceeds its prebuffer".format(profile),
 			settings["bufferMs"] > settings["prebufferMs"],
 		)
+
+	# The wired profile exists to take the last few milliseconds off a cabled path,
+	# so it has to be strictly tighter than LAN in every dimension and still inside
+	# what the helper will accept. If it is ever loosened to match LAN it has no
+	# reason to exist, and the user pays a dropped-audio risk for nothing.
+	wired = mod.LATENCY_SETTINGS["wired"]
+	lan = mod.LATENCY_SETTINGS["lan"]
+	for key in ("prebufferMs", "outputLatencyMs", "bufferMs"):
+		check_true("wired {0} is tighter than LAN".format(key), wired[key] < lan[key])
+	check("wired uses 5 ms frames", wired["opusFrameMs"], 5)
+	# The helper's own floors, which a profile exceeding would fail to launch.
+	check_true("wired prebuffer is at the helper's floor", wired["prebufferMs"] >= 5)
+	check_true("wired output latency is at the helper's floor", wired["outputLatencyMs"] >= 5)
+	check_true("wired buffer is at or above the helper's floor", wired["bufferMs"] >= 40)
+	# Nothing automatic may land on it: it is offered, never chosen.
+	check("automatic never picks wired",
+		mod._resolveLatencyProfile({"latencyProfile": "auto", "host": "192.168.1.20"}), "lan")
+	check("wired resolves when it is asked for by name",
+		mod._resolveLatencyProfile({"latencyProfile": "wired", "host": "8.8.8.8"}), "wired")
 
 
 def testQualityModes(mod):

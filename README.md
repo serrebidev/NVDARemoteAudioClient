@@ -14,7 +14,7 @@ A screen-reader-first NVDA add-on for sending live Windows audio between two com
 - Keeps NVDA speech on NVDA Remote where it belongs, so you do not hear it twice.
 - Encrypts audio end to end with an optional shared password; neither the relay nor the network gets the password or unencrypted audio.
 - Offers adaptive Opus, 5 ms live Opus, broadcast-quality Opus, and uncompressed PCM.
-- Chooses sensible LAN, Tailscale, and Internet latency settings automatically.
+- Chooses sensible LAN, Tailscale, and Internet latency settings automatically, with a lower-latency **Wired** profile for a sender on a cable.
 - Lets the receiver choose a playback device, adjust volume and pan, and shape bass, midrange, and treble.
 - Changes received volume, mute, and the other device's volume from a gesture, without reconnecting.
 - Finds RemSound devices on the network and remembers them by name, even when their address changes.

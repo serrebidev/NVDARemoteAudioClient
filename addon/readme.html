@@ -46,11 +46,14 @@
 
 <h2>Latency profiles</h2>
 <ul>
-  <li><strong>LAN</strong> — 5 ms Opus packets and the lowest buffer (15/15/120 ms).</li>
+  <li><strong>Wired</strong> — the lowest this add-on can go (5/5/60 ms), for a sender on a cable. It leaves almost nothing to absorb a stutter, so a phone or laptop on Wi-Fi will drop audio; it is never chosen for you.</li>
+  <li><strong>LAN</strong> — 5 ms Opus packets and a small buffer (15/15/120 ms). The right choice for a device found on this network, including a phone on Wi-Fi.</li>
   <li><strong>Tailscale</strong> — 10 ms Opus packets with a small extra buffer (50/20/250 ms).</li>
   <li><strong>Internet</strong> — 10 ms Opus packets with the most stable low-latency buffer (100/30/600 ms).</li>
-  <li><strong>Automatic</strong> — picked from the devices you set: LAN for the Windows default, private and loopback addresses, or any device found by discovery; Tailscale for 100.64.0.0/10 or *.ts.net; Internet for anything else.</li>
+  <li><strong>Automatic</strong> — picked from the devices you set: LAN for the Windows default, private and loopback addresses, or any device found by discovery; Tailscale for 100.64.0.0/10 or *.ts.net; Internet for anything else. It never picks Wired.</li>
 </ul>
+
+<p>Latency profiles set how much audio is buffered on the <em>receiving</em> side, so they affect what this computer hears, not what it sends. The delay a listener hears on another device is that device's own buffer plus its audio hardware; a television running the RemSound receiver, for example, buffers 50 ms by default and its Android audio output measured around 80 ms, neither of which this add-on can change.</p>
 
 <h2>Controls and status</h2>
 <p>The Tools menu provides receive, send, send and receive at the same time, reconnect, disconnect, status, this computer's address, find RemSound devices, copy diagnostics, server install, server update/repair, firewall, server remove/disable, and settings actions. Receive, send, send and receive at the same time, disconnect, reconnect, status, this computer's address, find RemSound devices, copy diagnostics, and every volume and remote-control command are also available as unbound NVDA Input Gestures under the <strong>NVDA Remote Audio</strong> category. While you are controlling another machine with NVDA Remote, those gestures stay local instead of being forwarded as keystrokes. Nothing in this list is given a default key, so no existing shortcut is taken over.</p>

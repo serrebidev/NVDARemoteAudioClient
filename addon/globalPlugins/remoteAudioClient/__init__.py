@@ -85,9 +85,14 @@ def _validateKey(key):
 
 
 STARTUP_MODES = ("auto", "disabled", "subscriber", "publisher", "duplex")
-LATENCY_PROFILES = ("auto", "lan", "tailscale", "internet")
+LATENCY_PROFILES = ("auto", "wired", "lan", "tailscale", "internet")
 QUALITY_MODES = ("adaptive", "opusLive", "opusBroadcast", "pcm")
 LATENCY_SETTINGS = {
+	# Wired is the floor the helper accepts: 5 ms of prebuffer, a 5 ms WASAPI
+	# event-sync target, and a 60 ms cap. It leaves almost nothing to absorb a
+	# stutter, so it is offered for a sender on a cable and never chosen for the
+	# user: a phone on Wi-Fi needs the room LAN's settings keep.
+	"wired": {"prebufferMs": 5, "outputLatencyMs": 5, "bufferMs": 60, "opusFrameMs": 5},
 	# LAN uses 5 ms Opus frames and a small WASAPI event-sync playout target.
 	"lan": {"prebufferMs": 15, "outputLatencyMs": 15, "bufferMs": 120, "opusFrameMs": 5},
 	"tailscale": {"prebufferMs": 50, "outputLatencyMs": 20, "bufferMs": 250, "opusFrameMs": 10},
@@ -425,7 +430,9 @@ def _resolveStartupMode(config):
 def _latencyProfileLabel(profile):
 	return {
 		"auto": _("Automatic"),
-		"lan": _("LAN: lowest latency"),
+		# Translators: the tightest profile; it needs a sender on a cable.
+		"wired": _("Wired: lowest latency, no room for Wi-Fi jitter"),
+		"lan": _("LAN: low latency"),
 		"tailscale": _("Tailscale: low latency"),
 		"internet": _("Internet: stable"),
 	}.get(profile, _("Automatic"))

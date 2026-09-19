@@ -1,5 +1,24 @@
 # NVDA Remote Audio Client release notes
 
+## 0.2.10
+
+### A Wired latency profile, for a sender on a cable
+
+- Adds **Wired: lowest latency, no room for Wi-Fi jitter** to the latency profiles. It is the floor the helper accepts — 5 ms prebuffer, 5 ms WASAPI event-sync target, 60 ms cap, 5 ms Opus frames — so it takes roughly 10 ms off what LAN buffers.
+- **It is never chosen automatically.** `Automatic` still resolves to LAN for a local address, and only an explicit choice selects Wired. LAN's settings stay as they were, because a phone on Wi-Fi needs the room they keep: the live iPhone run at LAN settings already produced 88 underruns over 48 seconds, and tightening that would trade audible dropouts for a delay the user cannot perceive.
+- LAN's own label changes from "LAN: lowest latency" to "LAN: low latency", since Wired is now lower.
+- Latency profiles set the **receiving** side's buffer, so this affects what this computer hears. It does not change how quickly another device plays what this computer sends.
+
+### Why this is opt-in rather than a new default
+
+Reported as lag when sending to a television. Measured, the delay was not ours: the Android receiver buffers 50 ms by default (`bufferMs = 50`, adjustable in its own UI) and its audio output thread measured **80 ms average** (`ave=80.67 std=6.45 min=54.78 max=101.22`) in `dumpsys media.audio_flinger`. Our send path was already 5 ms Opus frames at a measured 200 packets per second. Lowering a receive-side buffer cannot help a device whose delay lives in its speaker path, so Wired is offered for the case it does help — a sender on a cable — instead of being applied to everyone.
+
+### Testing
+
+- `tools/selftest_addon.py`: 274 → 287 checks. New checks require Wired to be strictly tighter than LAN in all three dimensions, to stay inside the helper's floors, to use 5 ms frames, and never to be reached by `Automatic`; the "every profile has a label" and "labels are distinct" checks pick up the new profile on their own.
+- `tools/mutation_check.py`: 33 mutations, all caught, including one that loosens Wired until it saves nothing over LAN.
+- One existing mutation had to be updated: it asserted a duplicate label by using the string "LAN: lowest latency", which LAN no longer carries.
+
 ## 0.2.9
 
 ### A RemSound device can no longer change this computer's Windows volume
