@@ -1,5 +1,26 @@
 # NVDA Remote Audio Client release notes
 
+## 0.2.5
+
+### This computer keeps one RemSound identity
+
+- The helper announced a brand-new discovery instance ID on every start, so no other RemSound device could identify it across restarts. The iPhone app documents what that forces it to do, in its own source: a discovered peer is re-identified by IP address, because "the address is the only stable key". Everything the user had set up for this computer was therefore tied to an address that can change.
+- The identity is now kept once per installation in `%LOCALAPPDATA%\NVDARemoteAudioHelper\remSoundInstanceId` and announced on every run, so a device that has this computer ticked keeps seeing the same computer — including after a restart, and including when this computer's address changes.
+- A damaged or hand-edited identity file is replaced rather than announced. A read-only profile or a full disk falls back to a fresh identity per run instead of breaking audio, which is what the other RemSound ports do anyway. An explicit identity still wins where a caller has one to pin.
+- No wire-format change: packet layout, password handling, ports, and codecs are untouched, so this does not affect any device already set up.
+
+### Verified against the RemSound iPhone app
+
+- Two-way audio with a real iPhone running RemSound was exercised over the LAN, in both codecs, sending a tone to the phone and recording the phone's microphone here.
+- Opus: 48.4 seconds recorded, every 100 ms window audible, zero authentication failures, zero unrecovered gaps, zero send errors, 2–3 ms round trip.
+- PCM: 39.4 seconds recorded, zero authentication failures, zero unrecovered gaps. The 24-bit multi-part frame reassembly had only ever been covered by self-tests; it is now confirmed against a different implementation on the other end.
+- The one thing the phone withheld until its own switch was set was its microphone: RemSound on iOS does not send to a peer until that peer is ticked **and** sending is switched on. Both are on the phone, and both are what the app's own per-peer status text names when they are not.
+
+### Testing
+
+- Adds `RemSoundIdentity.cs` cases to the helper self-test: one identity per installation, distinct identities for distinct installations, an explicit identity winning, and malformed, empty, missing, and empty-GUID values all refused rather than announced.
+- `tools/mutation_check.py` grows to 27 mutations, all caught.
+
 ## 0.2.4
 
 ### A second connection type: RemSound, peer to peer

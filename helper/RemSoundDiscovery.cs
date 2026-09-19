@@ -35,7 +35,7 @@ internal sealed class RemSoundDiscovery : IDisposable
 	private readonly object _gate = new();
 	private readonly Dictionary<string, RemSoundPeer> _peers = new(StringComparer.OrdinalIgnoreCase);
 	private readonly List<UdpClient> _listeners = [];
-	private readonly string _instanceId = Guid.NewGuid().ToString("D");
+	private readonly string _instanceId;
 	private readonly string _displayName;
 	private readonly int _discoveryPort;
 	private readonly int _audioPort;
@@ -45,8 +45,13 @@ internal sealed class RemSoundDiscovery : IDisposable
 	private volatile bool _canSend;
 	private volatile bool _canReceive;
 
-	public RemSoundDiscovery(string displayName, int discoveryPort, int audioPort, bool canSend, bool canReceive)
+	/// <summary>
+	/// <paramref name="instanceId"/> is normally left null so the identity is the one
+	/// remembered from a previous run; see <see cref="RemSoundIdentity"/>.
+	/// </summary>
+	public RemSoundDiscovery(string displayName, int discoveryPort, int audioPort, bool canSend, bool canReceive, string? instanceId = null)
 	{
+		_instanceId = RemSoundIdentity.Resolve(instanceId);
 		_displayName = string.IsNullOrWhiteSpace(displayName) ? Environment.MachineName : displayName.Trim();
 		_discoveryPort = discoveryPort;
 		_audioPort = audioPort;

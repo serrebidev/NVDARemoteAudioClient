@@ -123,6 +123,7 @@ Packet size and subscriber-side jitter buffering are tunable from CLI (the add-o
 | `LiveControls.cs` | The one-line command channel on standard input, the receive-volume handlers, and the Windows master-volume remote commands. |
 | `RemSoundProtocol.cs` | The RemSound v3 wire format: header, Format packets, heartbeat, 24-bit PCM framing, PBKDF2 key and fingerprint, nonce layout, and sealed remote control. |
 | `RemSoundDiscovery.cs` | RemSound's JSON LAN discovery announcements. |
+| `RemSoundIdentity.cs` | The one device identity this computer announces, kept per installation so other devices can identify it across restarts. |
 | `RemSoundLink.cs` | One UDP socket for audio, heartbeats, relay address checks, and remote control, with peer health tracking. |
 | `RemSoundSender.cs` | Opus or 24-bit PCM send, encrypted per packet, with the format re-announced every 250 ms. |
 | `RemSoundReceiver.cs` | Per-source session tracking, Opus decode with FEC and PLC, PCM reassembly, password-fingerprint diagnosis. |
@@ -263,6 +264,14 @@ the unicast half is what an iPhone relies on, and it is also what crosses
 Tailscale. Keys are matched case-sensitively, a device ignores its own instance ID,
 and a name is trimmed and length-capped rather than trusted, because it is spoken
 aloud and written to logs.
+
+The instance ID is the one piece of state the helper keeps between runs:
+`%LOCALAPPDATA%\NVDARemoteAudioHelper\remSoundInstanceId`, written on first use and
+read back on every start (`RemSoundIdentity.cs`). RemSound's own ports reroll it
+every time, which is why the iPhone app re-identifies a discovered peer by IP
+address instead — and so loses the association whenever an address changes.
+Keeping one identity per installation means a device that has this computer ticked
+keeps seeing the same computer.
 
 Remote control is a `type=5` packet whose payload is sealed with the audio key.
 The sealed plaintext is the command, a delta, and the sender's Unix time; the

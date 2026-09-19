@@ -138,6 +138,10 @@ MUTATIONS = [
      "payload.Slice(36, PasswordFingerprintSize)",
      "payload.Slice(28, PasswordFingerprintSize)",
      "cs", "the RemSound password fingerprint read from the wrong offset"),
+    ("helper/RemSoundIdentity.cs",
+     "Guid.TryParse((text ?? \"\").Trim(), out var id) && id != Guid.Empty",
+     "Guid.TryParse((text ?? \"\").Trim(), out var id)",
+     "cs", "an unusable RemSound device identity announced to the network"),
 ]
 
 

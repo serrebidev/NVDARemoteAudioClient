@@ -21,6 +21,7 @@ internal static class RemSoundSelfTestCases
 		TestPcmFraming();
 		TestControlSealing();
 		TestDiscoveryParsing();
+		TestDeviceIdentity();
 		TestPeerSpecs();
 		TestOptions();
 		TestLiveControls();
@@ -195,6 +196,50 @@ internal static class RemSoundSelfTestCases
 		var noisy = RemSoundDiscovery.BuildAnnouncement(id, new string('a', 300) + "\n", 47830, true, false);
 		Expect(RemSoundDiscovery.TryParseAnnouncement(noisy, from, own, out var trimmed) && trimmed.Name.Length == 128 &&
 			!trimmed.Name.Contains('\n'), "A long or control-character name was not cleaned up.");
+	}
+
+	private static void TestDeviceIdentity()
+	{
+		var folder = Path.Combine(Path.GetTempPath(), "nvda-remote-audio-identity-" + Guid.NewGuid().ToString("N"));
+		try
+		{
+			// One identity per installation. A phone that has ticked this computer
+			// must see the same device after a restart, or the user has to find and
+			// tick it again, which is exactly what re-rolling the ID on every start
+			// forces every other RemSound port to live with.
+			var first = RemSoundIdentity.Resolve(null, folder);
+			var second = RemSoundIdentity.Resolve(null, folder);
+			Expect(first == second, "The RemSound device identity changed between runs.");
+			Expect(RemSoundIdentity.Normalize(first) == first, "The remembered identity is not a usable GUID.");
+
+			var elsewhere = RemSoundIdentity.Resolve(null, Path.Combine(folder, "other-install"));
+			Expect(elsewhere != first, "Two installations were given the same RemSound device identity.");
+
+			// A caller with its own reason to pin an identity still wins.
+			var pinned = Guid.NewGuid().ToString("D");
+			Expect(RemSoundIdentity.Resolve(pinned, folder) == pinned, "An explicit RemSound identity was ignored.");
+
+			// Anything a peer could not parse must never be announced.
+			Expect(RemSoundIdentity.Normalize("not a guid") is null, "A malformed RemSound identity was accepted.");
+			Expect(RemSoundIdentity.Normalize("") is null, "An empty RemSound identity was accepted.");
+			Expect(RemSoundIdentity.Normalize(null) is null, "A missing RemSound identity was accepted.");
+			Expect(RemSoundIdentity.Normalize(Guid.Empty.ToString()) is null, "The empty GUID was accepted as an identity.");
+
+			// A damaged or hand-edited identity file is replaced rather than announced.
+			File.WriteAllText(Path.Combine(folder, "remSoundInstanceId"), "garbage");
+			Expect(RemSoundIdentity.Normalize(RemSoundIdentity.Resolve(null, folder)) is not null,
+				"A damaged identity file was not recovered from.");
+		}
+		finally
+		{
+			try
+			{
+				Directory.Delete(folder, recursive: true);
+			}
+			catch (IOException)
+			{
+			}
+		}
 	}
 
 	private static void TestPeerSpecs()
