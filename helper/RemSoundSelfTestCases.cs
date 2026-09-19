@@ -20,6 +20,7 @@ internal static class RemSoundSelfTestCases
 		TestEncryptionLayout();
 		TestPcmFraming();
 		TestControlSealing();
+		TestControlPolicy();
 		TestDiscoveryParsing();
 		TestDeviceIdentity();
 		TestPeerSpecs();
@@ -115,6 +116,33 @@ internal static class RemSoundSelfTestCases
 		var second = new byte[packet.Length];
 		RemCrypto.EncryptInto(gcm, nonces, plaintext, second);
 		Expect(!second.AsSpan(0, 12).SequenceEqual(packet.AsSpan(0, 12)), "Two RemSound packets shared a nonce.");
+	}
+
+	private static void TestControlPolicy()
+	{
+		// This computer's Windows volume is never changed by a peer, switched on or
+		// off: a speaker volume that moves on its own, from a device the user is not
+		// looking at, cannot be told apart from a fault by ear.
+		foreach (var kind in new[]
+		{
+			RemControlKind.SystemVolumeUp, RemControlKind.SystemVolumeDown, RemControlKind.SystemMuteToggle,
+		})
+		{
+			Expect(RemControlPolicy.IsSystemVolume(kind), "A Windows volume command was not recognised as one.");
+			Expect(!RemControlPolicy.AllowsInbound(kind, allowRemoteControl: true),
+				"A RemSound peer was allowed to change this computer's Windows volume.");
+		}
+
+		// The volume of the audio being received here is a different thing, and it
+		// follows the switch the user actually set.
+		foreach (var kind in new[] { RemControlKind.VolumeUp, RemControlKind.VolumeDown, RemControlKind.MuteToggle })
+		{
+			Expect(!RemControlPolicy.IsSystemVolume(kind), "A receive-volume command was mistaken for a Windows one.");
+			Expect(RemControlPolicy.AllowsInbound(kind, allowRemoteControl: true),
+				"An allowed receive-volume command was refused.");
+			Expect(!RemControlPolicy.AllowsInbound(kind, allowRemoteControl: false),
+				"A receive-volume command was accepted with remote control switched off.");
+		}
 	}
 
 	private static void TestPcmFraming()

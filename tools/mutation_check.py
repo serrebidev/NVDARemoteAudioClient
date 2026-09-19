@@ -158,6 +158,10 @@ MUTATIONS = [
      "Guid.TryParse((text ?? \"\").Trim(), out var id) && id != Guid.Empty",
      "Guid.TryParse((text ?? \"\").Trim(), out var id)",
      "cs", "an unusable RemSound device identity announced to the network"),
+    ("helper/LiveControls.cs",
+     "allowRemoteControl && !IsSystemVolume(kind)",
+     "allowRemoteControl",
+     "cs", "a RemSound peer allowed to change this computer's Windows volume"),
 ]
 
 

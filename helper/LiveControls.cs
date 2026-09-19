@@ -1,5 +1,3 @@
-using NAudio.CoreAudioApi;
-
 namespace NVDARemoteAudioHelper;
 
 /// <summary>
@@ -173,29 +171,25 @@ internal static class LiveControls
 	}
 }
 
-/// <summary>The Windows master volume, for RemSound's "system volume" remote commands.</summary>
-internal static class SystemVolume
+/// <summary>
+/// What a control command that arrived from a peer is allowed to do on this computer.
+/// </summary>
+internal static class RemControlPolicy
 {
-	public static string Apply(RemControlKind kind)
-	{
-		using var enumerator = new MMDeviceEnumerator();
-		using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-		var volume = device.AudioEndpointVolume;
-		switch (kind)
-		{
-			case RemControlKind.SystemVolumeUp:
-				// One native step, exactly what a keyboard volume key does.
-				volume.VolumeStepUp();
-				break;
-			case RemControlKind.SystemVolumeDown:
-				volume.VolumeStepDown();
-				break;
-			case RemControlKind.SystemMuteToggle:
-				volume.Mute = !volume.Mute;
-				break;
-		}
-		return volume.Mute
-			? "Windows volume muted."
-			: $"Windows volume {(int)Math.Round(volume.MasterVolumeLevelScalar * 100)} percent.";
-	}
+	public static bool IsSystemVolume(RemControlKind kind) =>
+		kind is RemControlKind.SystemVolumeUp or RemControlKind.SystemVolumeDown or RemControlKind.SystemMuteToggle;
+
+	/// <summary>
+	/// Whether an authenticated command from a peer may be acted on.
+	///
+	/// A peer may change the volume of the audio it is sending here, and only when the
+	/// user has allowed remote control at all. It may never change this computer's
+	/// Windows volume, whether or not that switch is on: a speaker volume that moves
+	/// on its own, at a moment the user did not ask for and from a device they are not
+	/// looking at, is alarming rather than useful, and by ear there is nothing to tell
+	/// the sender apart from a fault. Sending that command outward is still offered,
+	/// because that is the user deliberately acting on the other device.
+	/// </summary>
+	public static bool AllowsInbound(RemControlKind kind, bool allowRemoteControl) =>
+		allowRemoteControl && !IsSystemVolume(kind);
 }

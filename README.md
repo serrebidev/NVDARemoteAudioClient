@@ -98,7 +98,9 @@ On a RemSound connection the password is not optional: RemSound has no unencrypt
 
 The one exception is the relay path, where leaving the password empty enables unencrypted compatibility with older add-on versions. Use that only on a trusted LAN or inside a VPN such as Tailscale. Both computers need version 0.2.0 or newer for encrypted audio and PCM.
 
-A RemSound device can change this computer's volume only if **Let RemSound devices that share the password change this computer's volume** is ticked. Those commands are sealed with the audio key, ignored when they are more than ten minutes old, and ignored when replayed, so nobody without the password can forge one.
+A RemSound device can change the volume of the audio it is sending to this computer only if **Let RemSound devices that share the password change the volume of the audio they send here** is ticked. Those commands are sealed with the audio key, ignored when they are more than ten minutes old, and ignored when replayed, so nobody without the password can forge one.
+
+**No RemSound device can change this computer's Windows volume.** That is true whether or not the setting above is ticked: the helper contains no code that sets an endpoint volume, so a speaker volume that moves on its own can never come from a peer. This computer can still change the other device's volume, from its own gestures, because that is you acting deliberately on the device in front of you.
 
 When the two computers cannot understand each other's audio, the receiver says which one to update rather than falling silent. A wrong encryption password, a damaged network path, and a version mismatch are reported as three different problems, because they are fixed on different machines.
 

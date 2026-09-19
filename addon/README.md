@@ -60,7 +60,7 @@ NVDA add-on side of [NVDA Remote Audio Client](../README.md). Spawns and supervi
 - `remSoundPeers`: comma-separated `host[:port]` to send to and accept audio from. A RemSound relay host works here too. Entries the helper would reject are dropped here rather than in the helper, so one typo cannot stop the connection.
 - `remSoundDevices`: device names chosen from **Find RemSound devices on this network**. Stored by name and matched as they appear, so a device that changes address keeps working.
 - `remSoundDeviceName`: what other RemSound devices call this computer. Blank uses the computer name.
-- `allowRemoteControl`: when true, RemSound peers that know the password may change this computer's Windows volume. False by default.
+- `allowRemoteControl`: when true, RemSound peers that know the password may change the volume of the audio they are sending to this computer. False by default. A peer can never change this computer's Windows volume, whatever this is set to, so the key kept its name rather than becoming one about the speaker volume.
 - `qualityMode`: `adaptive` | `opusLive` | `opusBroadcast` | `pcm`.
 - `recordReceived` and `recordingFolder`: timestamped 48 kHz stereo float-WAV recording.
 - `profiles` and `activeProfile`: named snapshots managed from the Tools menu. A snapshot carries every key above, so a profile remembers its connection type and RemSound devices.

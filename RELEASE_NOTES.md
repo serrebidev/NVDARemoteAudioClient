@@ -1,5 +1,25 @@
 # NVDA Remote Audio Client release notes
 
+## 0.2.9
+
+### A RemSound device can no longer change this computer's Windows volume
+
+- Reported as "it turned up the volume when it did RemSound". There was a path that could do exactly that: with **Let RemSound devices that share the password change this computer's volume** ticked, an authenticated `SystemVolumeUp` from a peer called `SystemVolume.Apply`, which stepped the Windows master volume up through `AudioEndpointVolume`. The switch was on, so nothing stopped it.
+- That path is gone. The helper no longer contains any code that sets an endpoint volume — no `VolumeStepUp`, no `VolumeStepDown`, no `Mute` write — so a speaker volume that moves on its own cannot have come from a RemSound peer, whatever the settings say.
+- Incoming system-volume commands are refused outright, by a rule rather than by a setting: `RemControlPolicy` allows only the receive-volume commands, and only when the user has allowed remote control at all. A refusal is logged with its reason, so it is not silent.
+- The setting itself now means what its name suggested: **Let RemSound devices that share the password change the volume of the audio they send here**. That moves the gain on the incoming stream and nothing else. The stored key is still `allowRemoteControl`, so existing settings and profiles keep working.
+- **Sending** those commands outward is untouched: this computer can still raise, lower, or mute the other device's volume and its Windows volume, from the gestures in the NVDA Remote Audio category. That is the user acting deliberately on the device in front of them.
+
+### A note on what was confirmed
+
+The defect was found by reading the code path, not reproduced from a log: no volume event appears in any recorded run, and the add-on does not log the peer that asks. What is certain is that the capability existed, that the switch enabling it was on, and that it is now impossible.
+
+### Testing
+
+- Adds `TestControlPolicy` to the helper self-test: every system-volume kind is recognised as one and refused even when remote control is allowed, every receive-volume kind is refused when it is not, and the two sets are never confused.
+- `tools/mutation_check.py` grows to 32 mutations, all caught, including one that re-opens the Windows volume path.
+- Verified after the change that no endpoint-volume API remains anywhere in the helper.
+
 ## 0.2.8
 
 ### RemSound peer to peer is now the default connection type

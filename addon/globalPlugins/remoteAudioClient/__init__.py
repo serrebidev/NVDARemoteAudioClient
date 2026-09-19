@@ -1060,7 +1060,9 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 		self.remSoundNameCtrl.SetValue(str(self._config["remSoundDeviceName"]))
 		self.allowRemoteControlCheck = helper.addItem(wx.CheckBox(
 			self,
-			label=_("Let RemSound devices that share the password change this computer's volume"),
+			# Translators: RemSound peers may change the volume of the audio they send
+			# to this computer. They can never change this computer's Windows volume.
+			label=_("Let RemSound devices that share the password change the volume of the audio they send here"),
 		))
 		self.allowRemoteControlCheck.SetValue(bool(self._config["allowRemoteControl"]))
 

@@ -192,46 +192,37 @@ internal static class RemSoundRunner
 	}
 
 	/// <summary>
-	/// Carries out a remote volume command that has already been authenticated. App
-	/// volume commands move this computer's receive volume; system commands move the
-	/// Windows master volume by one native step, as RemSound does.
+	/// Carries out a remote volume command that has already been authenticated and
+	/// allowed. Only the receive volume arrives here: <see cref="RemControlPolicy"/>
+	/// has already refused anything that would touch this computer's Windows volume.
 	/// </summary>
 	private static void ApplyRemoteControl(RemControlKind kind, sbyte delta, string peer, PlaybackSink? playback)
 	{
+		if (playback is null)
+		{
+			JsonLog.Write("diagnostic", $"Ignored a receive-volume command from {peer}: this computer is not receiving audio.");
+			return;
+		}
 		switch (kind)
 		{
+			case RemControlKind.MuteToggle:
+				playback.Muted = !playback.Muted;
+				break;
 			case RemControlKind.VolumeUp:
 			case RemControlKind.VolumeDown:
-			case RemControlKind.MuteToggle:
-				if (playback is null)
+				var step = Math.Abs((int)delta);
+				if (step == 0)
 				{
-					JsonLog.Write("diagnostic", $"Ignored a receive-volume command from {peer}: this computer is not receiving audio.");
-					return;
+					step = 5;
 				}
-				if (kind == RemControlKind.MuteToggle)
-				{
-					playback.Muted = !playback.Muted;
-				}
-				else
-				{
-					var step = Math.Abs((int)delta);
-					if (step == 0)
-					{
-						step = 5;
-					}
-					playback.Volume += kind == RemControlKind.VolumeUp ? step : -step;
-				}
-				LiveControls.ReportVolume(playback, "remote", peer);
-				return;
+				playback.Volume += kind == RemControlKind.VolumeUp ? step : -step;
+				break;
 			default:
-				var message = SystemVolume.Apply(kind);
-				JsonLog.Write("volume", message, new Dictionary<string, object?>
-				{
-					["source"] = "remote",
-					["system"] = true,
-					["peer"] = peer,
-				});
+				// Unreachable while RemControlPolicy refuses everything else, and it is
+				// the safe answer if a future command kind arrives before it is handled.
+				JsonLog.Write("diagnostic", $"Ignored an unhandled remote command from {peer}.");
 				return;
 		}
+		LiveControls.ReportVolume(playback, "remote", peer);
 	}
 }

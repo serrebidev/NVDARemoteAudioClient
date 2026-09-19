@@ -120,7 +120,7 @@ Packet size and subscriber-side jitter buffering are tunable from CLI (the add-o
 | `ReceivedAudioRecorder.cs` | Timestamped received-audio WAV writer. |
 | `HelperSelfTest.cs` | Offline protocol, encryption, and compatibility tests. |
 | `PlaybackSink.cs` | WASAPI event-sync output, float ring buffer, prebuffer, underrun fade, trim, and continuous drift resampling. Live volume and mute without reopening the device. |
-| `LiveControls.cs` | The one-line command channel on standard input, the receive-volume handlers, and the Windows master-volume remote commands. |
+| `LiveControls.cs` | The one-line command channel on standard input, the receive-volume handlers, and the policy for what a remote command may do here. |
 | `RemSoundProtocol.cs` | The RemSound v3 wire format: header, Format packets, heartbeat, 24-bit PCM framing, PBKDF2 key and fingerprint, nonce layout, and sealed remote control. |
 | `RemSoundDiscovery.cs` | RemSound's JSON LAN discovery announcements. |
 | `RemSoundIdentity.cs` | The one device identity this computer announces, kept per installation so other devices can identify it across restarts. |
@@ -277,8 +277,17 @@ Remote control is a `type=5` packet whose payload is sealed with the audio key.
 The sealed plaintext is the command, a delta, and the sender's Unix time; the
 receiver refuses anything outside a ten-minute window, refuses a nonce it has
 already accepted, and refuses a command it cannot authenticate. A device therefore
-has to know the password to change this computer's volume, and the add-on only
+has to know the password before it can change anything here, and the add-on only
 accepts those commands at all when the user has allowed it.
+
+**A peer can never change this computer's Windows volume.** The receive-volume
+commands (`VolumeUp`, `VolumeDown`, `MuteToggle`) move the gain applied to the
+incoming audio and nothing else. The system-volume commands
+(`SystemVolumeUp`, `SystemVolumeDown`, `SystemMuteToggle`) are refused
+unconditionally in `RemControlPolicy`, switched on or not, and the helper holds no
+code that sets an endpoint volume — so a speaker volume that moves on its own can
+never have come from a RemSound peer. Sending those commands outward is still
+offered, because that is the user acting deliberately on the other device.
 
 ## License
 

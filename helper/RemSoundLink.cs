@@ -526,9 +526,11 @@ internal sealed class RemSoundLink : IDisposable
 			JsonLog.Write("diagnostic", $"Ignored a remote volume command from {name}: {reason}.");
 			return;
 		}
-		if (!_options.AllowRemoteControl)
+		if (!RemControlPolicy.AllowsInbound(kind, _options.AllowRemoteControl))
 		{
-			JsonLog.Write("diagnostic", $"Ignored a remote volume command from {name}: remote volume control is turned off on this computer.");
+			JsonLog.Write("diagnostic", RemControlPolicy.IsSystemVolume(kind)
+				? $"Ignored a Windows volume command from {name}: a RemSound peer never changes this computer's volume."
+				: $"Ignored a remote volume command from {name}: remote volume control is turned off on this computer.");
 			return;
 		}
 		ControlReceived?.Invoke(kind, delta, name);
