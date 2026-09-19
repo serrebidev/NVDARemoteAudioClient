@@ -52,7 +52,7 @@ The add-on normally detects its role for you: a computer with the audio server s
 
 1. On both devices, set the **same encryption password**. RemSound always encrypts, so a RemSound connection has no unencrypted mode.
 2. On this computer, set **Connection type** to **RemSound peer to peer**.
-3. To find the other device by name, open **NVDA menu > Tools > NVDA Remote Audio > Find RemSound devices on this network...**, make sure the RemSound app is open on the other device, and tick it in the list. The connection type is switched to RemSound for you, and the add-on says so if the encryption password is still missing — a RemSound connection cannot start without one.
+3. To find the other device by name, open **NVDA menu > Tools > NVDA Remote Audio > Find RemSound devices on this network...**, make sure the RemSound app is open on the other device, and tick it in the list. The connection type is switched to RemSound for you, and the add-on tells you if the encryption password is still missing — a RemSound connection cannot start without one. Choosing a device does not start the audio by itself; it says which menu item does.
 4. If discovery cannot reach it — over Tailscale or the open internet, for example — type its address or Tailscale name into **RemSound devices by address** instead.
 5. In the other device's own RemSound app, tick this computer the same way it appears there, and make sure that app is actually sending its microphone — RemSound on a phone does not send until sending is switched on, and its per-device status text says which of the two is stopping it.
 6. Choose **Receive remote audio**, **Send this computer's audio**, or **Send and receive at the same time (RemSound)**.

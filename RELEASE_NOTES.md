@@ -1,5 +1,17 @@
 # NVDA Remote Audio Client release notes
 
+## 0.2.7
+
+### Choosing a RemSound device now says how to start it
+
+- Choosing a device from **Find RemSound devices on this network** starts no connection by itself, and a RemSound connection that is not running is silent. On the RemSound phone app, ticking a peer *is* how you start listening, so anyone arriving from that app hears "Chosen: iPhone", waits for audio, and concludes the choice did nothing. This was reported exactly that way from a real installation: the device chosen, the password correct, and no connection ever attempted.
+- The message now continues: that nothing is connected yet, and which menu item starts it. When audio is already running the reminder is dropped, because reconnecting is what a device change is for and the user already knows the path.
+
+### Testing
+
+- `tools/selftest_addon.py` covers it both ways: the start hint is spoken when nothing is running, and is absent when a connection is already up.
+- `tools/mutation_check.py` grows to 29 mutations, all caught.
+
 ## 0.2.6
 
 ### Choosing a RemSound device now says when a password is still needed

@@ -856,6 +856,13 @@ def testConnectionProblems(mod):
 	check("the relay path never warns about a password",
 		mod._remSoundPasswordWarning({"transport": "nvda", "password": ""}), "")
 
+	# Choosing a device starts nothing by itself, and a RemSound setup that is not
+	# running is silent, which reads as "that did nothing" unless it is said.
+	check_true("a device choice with nothing running says how to start",
+		mod._startHint(False) != "")
+	check("a device choice while audio is already running adds nothing",
+		mod._startHint(True), "")
+
 
 def testRemSoundHelperArguments(mod):
 	"""The exact command line and environment a RemSound connection launches with."""

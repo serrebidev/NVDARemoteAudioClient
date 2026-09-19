@@ -316,6 +316,20 @@ def _remSoundPasswordWarning(config):
 	return ""
 
 
+def _startHint(running):
+	"""The spoken next step after choosing a RemSound device, or "" when it is already running.
+
+	Choosing a device starts nothing by itself, and a RemSound connection that is not
+	running is silent. On the phone app, ticking a device starts it, so a user who
+	has just done that here hears "Chosen: iPhone" and reasonably expects audio. Say
+	what to press instead of letting the choice look like it did nothing.
+	"""
+	if running:
+		return ""
+	# Translators: a RemSound device was chosen but no connection is running yet.
+	return _("Nothing is connected yet: choose Send and receive at the same time (RemSound) from the NVDA Remote Audio menu to start.")
+
+
 def _helperArguments(role, config, helperPath=None, nvdaPid=None):
 	"""The helper command line and the environment it needs, for one connection.
 
@@ -1543,8 +1557,12 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		warning = _remSoundPasswordWarning(config)
 		if warning:
 			message += ". " + warning
+		running = self._client.isRunning()
+		hint = _startHint(running)
+		if hint:
+			message += ". " + hint
 		ui.message(message)
-		if self._client.isRunning():
+		if running:
 			self.onReconnect(None)
 
 	def _onSendInstallDone(self, success):
