@@ -246,6 +246,11 @@ def testConfigNormalization(mod):
 	defaults = mod._normalizeConfig({})
 	check("default port", defaults["port"], 6838)
 	check("default quality", defaults["qualityMode"], "adaptive")
+	# RemSound is the connection this add-on leads with now, so a config that does
+	# not say otherwise gets it.
+	check("a new config defaults to RemSound", defaults["transport"], "remsound")
+	check("the default connection type is offered in settings", mod.TRANSPORTS[0], "remsound")
+	check("an unknown connection type falls back to the default", mod._normalizeConfig({"transport": "carrier-pigeon"})["transport"], "remsound")
 
 	clamped = mod._normalizeConfig({
 		"port": 999999,
@@ -327,7 +332,18 @@ def testConfigRoundTrip(mod):
 		json.dump(["not", "a", "mapping"], f)
 	check("a config of the wrong shape falls back", mod._loadConfig()["port"], 6838)
 
+	# A config written before the connection type existed carries the relay's
+	# settings and no transport key. Those users are set up on the audio server, and
+	# moving them to RemSound would leave them unable to connect at all, because
+	# RemSound needs a password. The key is filled in as the relay they were using.
+	with io.open(mod.CONFIG_PATH, "w", encoding="utf-8") as f:
+		json.dump({"host": "studio.example", "port": 6838, "key": "living room"}, f)
+	legacy = mod._loadConfig()
+	check("a config from before the connection type keeps using the relay", legacy["transport"], "nvda")
+	check("its relay settings survive", legacy["host"], "studio.example")
+
 	os.remove(mod.CONFIG_PATH)
+	check("with no config at all, a new install gets RemSound", mod._loadConfig()["transport"], "remsound")
 
 
 def testLatencyProfiles(mod):
@@ -617,6 +633,7 @@ def testSecretsNeverReachTheCommandLine(mod):
 	del launched[:]
 	try:
 		config = mod._normalizeConfig({
+			"transport": "nvda",
 			"host": "studio.example",
 			"port": 6838,
 			"key": "living room",
@@ -664,6 +681,7 @@ def testSecretsNeverReachTheCommandLine(mod):
 		# The receiving side passes its shaping settings and nothing it should not.
 		del launched[:]
 		config = mod._normalizeConfig({
+			"transport": "nvda",
 			"host": "studio.example",
 			"key": "living room",
 			"password": "hunter2",
@@ -701,7 +719,7 @@ def testSecretsNeverReachTheCommandLine(mod):
 		# An invalid key is refused before a process is ever started.
 		del launched[:]
 		del spoken[:]
-		bad = mod._normalizeConfig({"host": "pc", "key": "with\ttab"})
+		bad = mod._normalizeConfig({"transport": "nvda", "host": "pc", "key": "with\ttab"})
 		client = mod.AudioClientProcess()
 		client.start("subscriber", bad)
 		check("an invalid key starts no helper", len(launched), 0)
@@ -714,7 +732,7 @@ def testSecretsNeverReachTheCommandLine(mod):
 		del spoken[:]
 		mod.HELPER_PATH = os.path.join(os.path.dirname(standIn), "definitely-not-here.exe")
 		client = mod.AudioClientProcess()
-		client.start("subscriber", mod._normalizeConfig({"host": "pc", "key": "room"}))
+		client.start("subscriber", mod._normalizeConfig({"transport": "nvda", "host": "pc", "key": "room"}))
 		check("a missing helper starts nothing", len(launched), 0)
 		check_true("a missing helper is announced", any("missing" in m.lower() for m in spoken))
 	finally:
@@ -725,6 +743,7 @@ def testSecretsNeverReachTheCommandLine(mod):
 def testDiagnosticsNeverLeakThePassword(mod):
 	"""Diagnostics are copied to the clipboard and pasted into bug reports."""
 	config = mod._loadConfig()
+	config["transport"] = "nvda"
 	config["host"] = "studio.example"
 	config["key"] = "living room"
 	config["password"] = "a-very-secret-password"

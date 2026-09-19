@@ -15,7 +15,7 @@ NVDA add-on side of [NVDA Remote Audio Client](../README.md). Spawns and supervi
 
 ```json
 {
-  "transport": "nvda",
+  "transport": "remsound",
   "host": "127.0.0.1",
   "port": 6838,
   "key": "",
@@ -46,7 +46,7 @@ NVDA add-on side of [NVDA Remote Audio Client](../README.md). Spawns and supervi
 }
 ```
 
-- `transport`: `nvda` | `remsound`. `nvda` (the default) uses the audio server and needs `host`, `port`, and `key`. `remsound` talks peer to peer with the RemSound apps, ignores `host` and `key` entirely, and requires `password`.
+- `transport`: `remsound` | `nvda`. `remsound` (the default) talks peer to peer with the RemSound apps, ignores `host` and `key` entirely, and requires `password`. `nvda` uses the audio server and needs `host`, `port`, and `key`. A config written before this key existed is read as `nvda`, because that is what it was written under and RemSound cannot connect without a password.
 - `key` is the session key / room name. It is required on the relay path and must match on both sides, but it is not an encryption password.
 - `startupMode`: `auto` | `disabled` | `subscriber` | `publisher` | `duplex`. `auto` picks `publisher` if `C:\NVDARemoteAudioServer\NVDARemoteAudioServer.exe` or `%LOCALAPPDATA%\NVDARemoteAudioServer\NVDARemoteAudioServer.exe` exists on the machine, else `subscriber`. `duplex` sends and receives at once and is only accepted with `transport: remsound`.
 - `latencyProfile`: `auto` | `lan` | `tailscale` | `internet`. With `transport: remsound`, `auto` picks `lan` when no address was typed, because a device chosen by name was found by LAN discovery, and otherwise resolves the first typed address. On the relay path it resolves `host`: private IP or loopback → LAN, 100.64.0.0/10 or `*.ts.net` → Tailscale, else Internet.

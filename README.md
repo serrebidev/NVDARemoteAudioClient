@@ -8,7 +8,7 @@ A screen-reader-first NVDA add-on for sending live Windows audio between two com
 
 ## Features
 
-- Connects two ways: through an [NVDARemoteAudioServer](https://github.com/haitun001/NVDARemoteAudioServer) relay, or peer to peer with the [RemSound](https://github.com/Ednunp/RemSound) apps for Windows, iPhone, and Android.
+- Connects two ways, and defaults to peer to peer with the [RemSound](https://github.com/Ednunp/RemSound) apps for Windows, iPhone, Android, and Mac. An [NVDARemoteAudioServer](https://github.com/haitun001/NVDARemoteAudioServer) relay is the other choice, for two Windows computers.
 - Sends all system audio except NVDA, isolates one selected application, or sends a microphone.
 - Sends and receives at the same time on a RemSound connection, so a phone can hear this computer and this computer can hear the phone.
 - Keeps NVDA speech on NVDA Remote where it belongs, so you do not hear it twice.
@@ -31,11 +31,11 @@ A screen-reader-first NVDA add-on for sending live Windows audio between two com
 
 Grab `remoteAudioClient-X.Y.Z.nvda-addon` from the [Releases page](https://github.com/serrebidev/NVDARemoteAudioClient/releases), open it, and let NVDA install it. Install the same version on both computers, then restart NVDA.
 
-For the highlights in version 0.2.4, see the [release notes](RELEASE_NOTES.md).
+For the highlights in version 0.2.8, see the [release notes](RELEASE_NOTES.md).
 
 ## First connection
 
-There are two ways to connect. Pick the **Connection type** that matches the device on the other end.
+There are two ways to connect, and the **Connection type** setting picks between them. It defaults to **RemSound peer to peer**, which is the one to use with a phone or Mac; choose **NVDA Remote Audio server** instead when both ends are Windows computers using the relay.
 
 ### Through the audio server (both computers run Windows)
 

@@ -49,7 +49,7 @@ DEFAULT_CONFIG = {
 	"announceStatus": True,
 	"useFec": True,
 	"verboseLogging": False,
-	"transport": "nvda",
+	"transport": "remsound",
 	"remSoundPeers": "",
 	"remSoundDevices": [],
 	"remSoundDeviceName": "",
@@ -59,7 +59,7 @@ DEFAULT_CONFIG = {
 	"activeProfile": "",
 }
 
-TRANSPORTS = ("nvda", "remsound")
+TRANSPORTS = ("remsound", "nvda")
 REMSOUND_PORT = 47830
 # Characters a host name or address can contain; the helper applies the same rule.
 _PEER_ALLOWED = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_:")
@@ -135,6 +135,14 @@ def _loadConfig():
 		with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
 			loaded = json.load(f)
 		if isinstance(loaded, dict):
+			# A config written before the connection type existed carries the relay's
+			# settings and no transport key. Those users are set up on the audio
+			# server, and moving them to RemSound would leave them unable to connect
+			# at all, because RemSound needs a password. The new default applies to a
+			# config that has not been written yet, not to one that predates the
+			# choice.
+			if loaded and "transport" not in loaded:
+				loaded = dict(loaded, transport="nvda")
 			config.update(loaded)
 	except FileNotFoundError:
 		pass

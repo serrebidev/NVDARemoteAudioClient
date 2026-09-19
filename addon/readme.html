@@ -8,10 +8,10 @@
 <h1>NVDA Remote Audio Client</h1>
 <p>This add-on sends or receives secure low-latency audio between two Windows machines, and to and from the <a href="https://github.com/Ednunp/RemSound">RemSound</a> apps on Windows, iPhone, Android, and Mac. It can send all system audio except NVDA, isolate one selected application, or send a microphone. NVDA speech itself stays on NVDA Remote.</p>
 
-<p>There are two connection types, chosen under <strong>Connection type</strong> in settings:</p>
+<p>There are two connection types, chosen under <strong>Connection type</strong> in settings. <strong>RemSound peer to peer</strong> is the default:</p>
 <ul>
-  <li><strong>NVDA Remote Audio server</strong> — the default. Both machines connect to a relay server by host name, port 6838, and a shared room name.</li>
-  <li><strong>RemSound peer to peer</strong> — this machine talks directly to a RemSound device. There is no server and no room name, only a shared encryption password. UDP port 47830 is used, with UDP 47821 for discovery.</li>
+  <li><strong>RemSound peer to peer</strong> — the default. This machine talks directly to a RemSound device. There is no server and no room name, only a shared encryption password. UDP port 47830 is used, with UDP 47821 for discovery.</li>
+  <li><strong>NVDA Remote Audio server</strong> — both machines connect to a relay server by host name, port 6838, and a shared room name, with no RemSound device involved.</li>
 </ul>
 
 <h2>Setup through the audio server</h2>

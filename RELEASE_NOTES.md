@@ -1,5 +1,25 @@
 # NVDA Remote Audio Client release notes
 
+## 0.2.8
+
+### RemSound peer to peer is now the default connection type
+
+- **Connection type** in settings still offers both, but a fresh install now starts on **RemSound peer to peer**, and it leads the list. RemSound is the connection that reaches a phone, a Mac, or a PC, over one shared password and no server; the relay is the specialist choice now, for two Windows computers where the audio server is already installed.
+- **A configuration saved before the connection type existed is left on the audio server.** Those users are already set up on the relay, and moving them to RemSound would leave them unable to connect at all, because RemSound requires an encryption password. The new default applies to a config that has not been written yet, not to one that predates the choice. Configs with an explicit choice are honoured either way.
+- An unrecognised connection type falls back to the default rather than being silently kept.
+
+### What this does not change
+
+- The relay path itself: same payload v2, same ports, same room-name behaviour, same latency profiles.
+- The helper's own `--transport` command line default is still the relay, because the add-on passes `--transport remsound` explicitly when it wants RemSound and nothing otherwise. Changing that would break the relay path for anyone running an older helper with a newer add-on.
+- Existing RemSound installations: an explicit `transport` in the config is never overridden.
+
+### Testing
+
+- `tools/selftest_addon.py`: 268 → 274 checks. New checks cover the RemSound default, the default being first in the settings list, an unknown connection type falling back, a pre-connection-type config staying on the relay with its relay settings intact, and a config-less install getting RemSound.
+- The relay-path tests that previously relied on the old default now state `transport: nvda` explicitly, so they test the relay rather than whatever the default happens to be.
+- `tools/mutation_check.py` grows to 31 mutations, all caught, including one for each new behaviour: a default that never changed, and an upgrade that silently moves a relay setup onto RemSound.
+
 ## 0.2.7
 
 ### Choosing a RemSound device now says how to start it
