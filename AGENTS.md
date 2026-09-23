@@ -1,5 +1,3 @@
-@C:\Users\admin\.codex\RTK.md
-
 # AGENTS.md
 
 ## Project
