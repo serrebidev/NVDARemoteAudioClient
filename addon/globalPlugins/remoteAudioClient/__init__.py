@@ -51,6 +51,9 @@ DEFAULT_CONFIG = {
 	"verboseLogging": False,
 	"transport": "remsound",
 	"remSoundPeers": "",
+	"remSoundRelay": "",
+	# Who is heard in the relay group: None hears everyone, [] hears nobody.
+	"remSoundRelayTicks": None,
 	"remSoundDevices": [],
 	"remSoundDeviceName": "",
 	"allowRemoteControl": False,
@@ -209,6 +212,8 @@ def _normalizeConfig(config):
 		"verboseLogging": asBool(config.get("verboseLogging"), DEFAULT_CONFIG["verboseLogging"]),
 		"transport": config.get("transport") if config.get("transport") in TRANSPORTS else DEFAULT_CONFIG["transport"],
 		"remSoundPeers": ", ".join(_parsePeerList(config.get("remSoundPeers"))),
+		"remSoundRelay": ", ".join(_parsePeerList(config.get("remSoundRelay"))[:1]),
+		"remSoundRelayTicks": _parseTickIds(config.get("remSoundRelayTicks")),
 		"remSoundDevices": _parseDeviceNames(config.get("remSoundDevices")),
 		"remSoundDeviceName": "".join(
 			c for c in str(config.get("remSoundDeviceName") or "") if c.isprintable()
@@ -258,6 +263,31 @@ def _parsePeerList(value):
 		if entry.lower() not in (p.lower() for p in peers):
 			peers.append(entry)
 	return peers
+
+
+def _parseTickIds(value):
+	"""Group client ids chosen in the relay members dialog.
+
+	None is kept as None: the legacy hello with no tick list, which hears the
+	whole group. Anything else becomes the explicit list, possibly empty.
+	Invalid entries are dropped rather than stopping the helper from starting.
+	"""
+	if value is None:
+		return None
+	if isinstance(value, str):
+		entries = value.replace(";", ",").split(",")
+	elif isinstance(value, (list, tuple)):
+		entries = value
+	else:
+		return []
+	ids = []
+	for entry in entries:
+		entry = str(entry).strip().lower()
+		if len(entry) != 32 or any(c not in "0123456789abcdef" for c in entry):
+			continue
+		if entry not in ids and len(ids) < 64:
+			ids.append(entry)
+	return ids
 
 
 def _parseDeviceNames(value):
@@ -361,6 +391,13 @@ def _helperArguments(role, config, helperPath=None, nvdaPid=None):
 		devices = _parseDeviceNames(config.get("remSoundDevices"))
 		if devices:
 			args.extend(["--peer-names", ",".join(devices)])
+		relay = str(config.get("remSoundRelay") or "").strip()
+		if relay:
+			args.extend(["--relay", relay])
+		ticks = config.get("remSoundRelayTicks")
+		if ticks is not None:
+			# Present even when empty: an explicit empty list hears nobody.
+			args.extend(["--relay-ticks", ",".join(ticks)])
 		deviceName = str(config.get("remSoundDeviceName") or "").strip()
 		if deviceName:
 			args.extend(["--device-name", deviceName])
@@ -752,6 +789,9 @@ class AudioClientProcess:
 		self._transport = DEFAULT_CONFIG["transport"]
 		#: The latest RemSound devices the running helper saw on the network.
 		self.discoveredPeers = []
+		#: The latest V2 relay group roster, each a dict with id, name,
+		#: ticked_by_them and ticked_by_me. Empty until the relay answers.
+		self.relayMembers = []
 
 	def isRunning(self):
 		return self._process is not None and self._process.poll() is None
@@ -777,6 +817,7 @@ class AudioClientProcess:
 		self._role = role
 		self._transport = config.get("transport", DEFAULT_CONFIG["transport"])
 		self.discoveredPeers = []
+		self.relayMembers = []
 		self._lastMessage = _("Connecting")
 		self._startedAt = time.time()
 		self._stopping = False
@@ -981,6 +1022,10 @@ class AudioClientProcess:
 			peers = event.get("peers")
 			if isinstance(peers, list):
 				self.discoveredPeers = [peer for peer in peers if isinstance(peer, dict)]
+		elif eventName == "relay_members":
+			members = event.get("members")
+			if isinstance(members, list):
+				self._handleRelayMembers(event, [member for member in members if isinstance(member, dict)])
 		elif eventName == "error":
 			wx.CallAfter(ui.message, _("Remote audio error: {message}").format(message=message))
 			log.error("Remote audio helper error: %s", line)
@@ -988,6 +1033,27 @@ class AudioClientProcess:
 			self._queueStatus(_(message))
 		elif eventName == "recording":
 			self._queueStatus(_(message))
+
+	def _handleRelayMembers(self, event, members):
+		"""Keep the roster and announce who joined or left the relay group."""
+		before = {str(member.get("id")): str(member.get("name") or "") for member in self.relayMembers}
+		now = {str(member.get("id")): str(member.get("name") or "") for member in members if member.get("id")}
+		self.relayMembers = members
+		if event.get("joined"):
+			if now:
+				# Translators: this computer joined a RemSound relay group; {names} lists the members.
+				self._queueStatus(_("Joined the relay group with {names}").format(names=", ".join(sorted(now.values()))))
+			else:
+				self._queueStatus(_("Joined the relay group; nobody else is in it yet"))
+			return
+		joined = sorted(name for id, name in now.items() if id not in before)
+		left = sorted(name for id, name in before.items() if id not in now)
+		for name in joined:
+			# Translators: a device joined the RemSound relay group.
+			self._queueStatus(_("{name} joined the relay group").format(name=name))
+		for name in left:
+			# Translators: a device left the RemSound relay group.
+			self._queueStatus(_("{name} left the relay group").format(name=name))
 
 	def _handleVolumeEvent(self, event, message):
 		fromOtherDevice = event.get("source") == "remote"
@@ -1012,6 +1078,65 @@ class AudioClientProcess:
 		wx.CallAfter(ui.message, text)
 		if isinstance(volume, int) and self._volumeCallback is not None:
 			wx.CallAfter(self._volumeCallback, volume)
+
+
+class RelayMembersDialog(wx.Dialog):
+	"""Tick the relay group members this computer hears and is heard by.
+
+	Checking a member sends audio to them and accepts audio from them; the
+	relay only forwards between members that ticked each other, so both sides
+	have to choose. "Hear everyone" returns to the legacy hello with no tick
+	list. Ticks are dropped when the encryption password changes, because the
+	relay treats that as a new group.
+	"""
+
+	def __init__(self, parent, members):
+		super().__init__(parent, title=_("RemSound relay members"))
+		self.accepted = False
+		# None means hear everyone; otherwise the explicit list of member ids.
+		self.tickedIds = None
+		self._members = members
+		sizer = wx.BoxSizer(wx.VERTICAL)
+		# Translators: instructions for the relay members checklist.
+		info = wx.StaticText(self, label=_(
+			"Tick the members you want to hear and be heard by. "
+			"A member marked as having ticked you is already listening to this computer."))
+		sizer.Add(info, 0, wx.ALL, 10)
+		labels = []
+		for member in members:
+			label = str(member.get("name") or _("Unnamed member"))
+			if member.get("ticked_by_them"):
+				# Translators: appended to a relay member's name in the checklist.
+				label += _(" (has ticked you)")
+			labels.append(label)
+		self._list = wx.CheckListBox(self, choices=labels)
+		for index, member in enumerate(members):
+			if member.get("ticked_by_me"):
+				self._list.Check(index)
+		sizer.Add(self._list, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+		buttons = wx.BoxSizer(wx.HORIZONTAL)
+		okButton = wx.Button(self, wx.ID_OK, _("OK"))
+		cancelButton = wx.Button(self, wx.ID_CANCEL, _("Cancel"))
+		# Translators: button that hears the whole relay group again.
+		everyoneButton = wx.Button(self, wx.ID_ANY, _("Hear everyone"))
+		buttons.Add(okButton, 0, wx.RIGHT, 5)
+		buttons.Add(cancelButton, 0, wx.RIGHT, 5)
+		buttons.Add(everyoneButton, 0)
+		sizer.Add(buttons, 0, wx.ALL | wx.ALIGN_RIGHT, 10)
+		self.SetSizer(sizer)
+		self.SetSize((480, 360))
+		okButton.Bind(wx.EVT_BUTTON, self._onOk)
+		everyoneButton.Bind(wx.EVT_BUTTON, self._onHearEveryone)
+
+	def _onOk(self, event):
+		self.accepted = True
+		self.tickedIds = [self._members[index].get("id") for index in self._list.GetCheckedItems()]
+		self.EndModal(wx.ID_OK)
+
+	def _onHearEveryone(self, event):
+		self.accepted = True
+		self.tickedIds = None
+		self.EndModal(wx.ID_OK)
 
 
 class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
@@ -1049,11 +1174,17 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 		self.passwordCtrl.SetValue(str(self._config["password"]))
 
 		self.remSoundPeersCtrl = helper.addLabeledControl(
-			# Translators: addresses of RemSound devices, such as a phone's IP address, a Tailscale address, or a RemSound relay.
-			_("RemSound devices by address (comma-separated, for example 192.168.1.20 or relay.example.com):"),
+			# Translators: addresses of RemSound devices, such as a phone's IP address or a Tailscale address.
+			_("RemSound devices by address (comma-separated, for example 192.168.1.20):"),
 			wx.TextCtrl,
 		)
 		self.remSoundPeersCtrl.SetValue(str(self._config["remSoundPeers"]))
+		self.remSoundRelayCtrl = helper.addLabeledControl(
+			# Translators: address of a RemSound V2 relay for group calls, left blank for device-to-device calls.
+			_("RemSound relay for group calls (optional, for example relay.example.com):"),
+			wx.TextCtrl,
+		)
+		self.remSoundRelayCtrl.SetValue(str(self._config["remSoundRelay"]))
 		self.remSoundDevicesCtrl = helper.addLabeledControl(
 			# Translators: names of RemSound devices chosen with "Find RemSound devices on this network".
 			_("RemSound devices by name (comma-separated; use Find RemSound devices in the Tools menu):"),
@@ -1207,6 +1338,13 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 				_("NVDA Remote Audio"), wx.OK | wx.ICON_ERROR)
 			self.remSoundPeersCtrl.SetFocus()
 			return False
+		relay = self.remSoundRelayCtrl.GetValue().strip()
+		if relay and len(_parsePeerList(relay)) != 1:
+			gui.messageBox(
+				_("The relay is not a host name or address: {entry}").format(entry=relay),
+				_("NVDA Remote Audio"), wx.OK | wx.ICON_ERROR)
+			self.remSoundRelayCtrl.SetFocus()
+			return False
 		if transport == "remsound":
 			return super().isValid()
 		# Empty key is allowed at save time so the user can come back later, but
@@ -1222,6 +1360,7 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 
 	def onSave(self):
 		config = _loadConfig()
+		oldPassword = str(config.get("password") or "")
 		config.update({
 			"host": self.hostCtrl.GetValue(),
 			"port": self.portCtrl.GetValue(),
@@ -1233,6 +1372,7 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 			"captureDevice": self._captureValues[self.captureChoice.GetSelection()][1],
 			"transport": TRANSPORTS[self.transportChoice.GetSelection()],
 			"remSoundPeers": self.remSoundPeersCtrl.GetValue(),
+			"remSoundRelay": self.remSoundRelayCtrl.GetValue(),
 			"remSoundDevices": self.remSoundDevicesCtrl.GetValue(),
 			"remSoundDeviceName": self.remSoundNameCtrl.GetValue(),
 			"allowRemoteControl": self.allowRemoteControlCheck.GetValue(),
@@ -1250,6 +1390,11 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 			"useFec": self.useFecCheck.GetValue(),
 			"verboseLogging": self.verboseLoggingCheck.GetValue(),
 		})
+		if self.passwordCtrl.GetValue() != oldPassword:
+			# A new password is a new group on the relay: it drops the old
+			# selections, so the saved ticks go with them and the next hello
+			# is the legacy one that hears everyone.
+			config["remSoundRelayTicks"] = None
 		config["activeProfile"] = ""
 		_saveConfig(config)
 
@@ -1368,6 +1513,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			statusItem = self._menu.Append(wx.ID_ANY, _("Audio status"))
 			addressItem = self._menu.Append(wx.ID_ANY, _("This computer's address for the other computer"))
 			findDevicesItem = self._menu.Append(wx.ID_ANY, _("Find RemSound devices on this network..."))
+			relayMembersItem = self._menu.Append(wx.ID_ANY, _("Choose RemSound relay members..."))
 			diagnosticsItem = self._menu.Append(wx.ID_ANY, _("Copy audio diagnostics"))
 			selfTestItem = self._menu.Append(wx.ID_ANY, _("Run helper self-test"))
 			self._menu.AppendSeparator()
@@ -1386,6 +1532,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onSend, self._sendItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onDuplex, self._duplexItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onFindDevices, findDevicesItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onRelayMembers, relayMembersItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onReconnect, reconnectItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onStop, stopItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onToggleRecording, self._recordItem)
@@ -1581,6 +1728,56 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		ui.message(message)
 		if running:
 			self.onReconnect(None)
+
+	def onRelayMembers(self, event):
+		config = _loadConfig()
+		if not config.get("remSoundRelay"):
+			gui.messageBox(
+				_("Enter a RemSound relay address in NVDA Remote Audio settings first, then connect."),
+				_("Relay members"), wx.OK | wx.ICON_INFORMATION)
+			return
+		if not self._client.isRunning() or self._client.transport() != "remsound":
+			gui.messageBox(
+				_("Connect the RemSound audio first: the member list comes from the relay."),
+				_("Relay members"), wx.OK | wx.ICON_INFORMATION)
+			return
+		members = [member for member in self._client.relayMembers if member.get("id")]
+		if not members:
+			gui.messageBox(
+				_("The relay has not sent its member list yet. Wait a few seconds and try again."),
+				_("Relay members"), wx.OK | wx.ICON_INFORMATION)
+			return
+		dialog = RelayMembersDialog(gui.mainFrame, members)
+		try:
+			if dialog.ShowModal() != wx.ID_OK or not dialog.accepted:
+				return
+			self._applyRelayTicks(config, dialog.tickedIds)
+		finally:
+			dialog.Destroy()
+
+	def _applyRelayTicks(self, config, tickedIds):
+		"""Send new relay ticks to the running helper and remember them.
+
+		tickedIds is None to hear the whole group, or the explicit list of
+		member ids (possibly empty, which hears nobody).
+		"""
+		config["remSoundRelayTicks"] = tickedIds
+		self._config = _saveConfig(config)
+		if tickedIds is None:
+			sent = self._client.sendCommand("relay-ticks-clear")
+			message = _("Hearing everyone in the relay group")
+		elif not tickedIds:
+			sent = self._client.sendCommand("relay-set-ticks ")
+			message = _("Hearing nobody in the relay group")
+		else:
+			sent = self._client.sendCommand("relay-set-ticks " + ",".join(tickedIds))
+			# Translators: the number of relay group members chosen to hear.
+			message = _("Hearing {count} relay group member(s)").format(count=len(tickedIds))
+		if sent:
+			ui.message(message)
+		else:
+			# Translators: the helper is not running, so the choice only applies at the next connect.
+			ui.message(_("{message}; it applies the next time audio connects").format(message=message))
 
 	def _onSendInstallDone(self, success):
 		if not success:

@@ -23,6 +23,7 @@ internal static class RemSoundSelfTestCases
 		TestControlPolicy();
 		TestDiscoveryParsing();
 		TestDeviceIdentity();
+		TestRelayGroups();
 		TestPeerSpecs();
 		TestOptions();
 		TestLiveControls();
@@ -270,6 +271,147 @@ internal static class RemSoundSelfTestCases
 		}
 	}
 
+	private static void TestRelayGroups()
+	{
+		var clientId = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
+
+		// Group framing is the ordinary header with version 2 and the sender's id.
+		var header = new byte[RemGroupPacket.HeaderSize];
+		RemGroupPacket.WriteHeader(header, RemPacketType.Audio, 7, 0x1234, clientId);
+		Expect(Encoding.ASCII.GetString(header, 0, 4) == "RMND", "A group packet lost the RMND magic.");
+		Expect(header[4] == 2, "A group packet does not carry version 2.");
+		Expect(RemGroupPacket.TryReadHeader(header, out var type, out var streamId, out var sequence, out var readId) &&
+			type == RemPacketType.Audio && streamId == 7 && sequence == 0x1234 && readId.SequenceEqual(clientId),
+			"A group header did not survive a round trip.");
+		Expect(!RemPacket.TryReadHeader(header, out _, out _, out _), "An ordinary reader accepted a group packet.");
+		var ordinary = new byte[RemPacket.HeaderSize];
+		RemPacket.WriteHeader(ordinary, RemPacketType.Audio, 1, 1);
+		Expect(!RemGroupPacket.TryReadHeader(ordinary, out _, out _, out _, out _), "A group reader accepted an ordinary packet.");
+		var relayId = new byte[16];
+		Expect(RemGroupPacket.IsRelayId(relayId) && !RemGroupPacket.IsRelayId(clientId), "The relay's all-zero client id was misread.");
+
+		// Wrapping keeps the type and the payload; only the header grows.
+		var payload = new byte[] { 9, 8, 7 };
+		var wrapped = RemGroupPacket.Wrap(ordinary.Concat(payload).ToArray(), clientId);
+		Expect(wrapped.Length == RemGroupPacket.HeaderSize + payload.Length, "A wrapped packet is not 16 bytes longer.");
+		Expect(RemGroupPacket.TryReadHeader(wrapped, out var wrappedType, out _, out _, out var wrappedId) &&
+			wrappedType == RemPacketType.Audio && wrappedId.SequenceEqual(clientId) &&
+			wrapped.AsSpan(RemGroupPacket.HeaderSize).SequenceEqual(payload),
+			"A wrapped packet lost its type, id or payload.");
+
+		// The hello: 32-byte name, 8-byte group tag, then the tick list.
+		var tag = RemCrypto.Fingerprint("test123");
+		var everyone = RemGroupPacket.BuildHello(clientId, "Studio PC", tag, null);
+		Expect(everyone.Length == RemGroupPacket.HeaderSize + 40, "The legacy hello is not 40 bytes of payload.");
+		var everyonePayload = everyone.AsSpan(RemGroupPacket.HeaderSize);
+		Expect(RemGroupPacket.DecodeName(everyonePayload[..32]) == "Studio PC", "The hello name was misread.");
+		Expect(everyonePayload.Slice(32, 8).SequenceEqual(tag), "The hello group tag is not the password fingerprint.");
+		var ticked = new List<byte[]> { new byte[] { 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1 } };
+		var hello = RemGroupPacket.BuildHello(clientId, "Studio PC", tag, ticked);
+		var helloPayload = hello.AsSpan(RemGroupPacket.HeaderSize);
+		Expect(helloPayload[40] == 1, "The hello tick count is not at offset 40.");
+		Expect(helloPayload.Slice(41, 16).SequenceEqual(ticked[0]), "The hello tick list lost the client id.");
+
+		// A name longer than 32 bytes is cut on a character boundary, never mid-byte.
+		var longHello = RemGroupPacket.BuildHello(clientId, new string('\u00e9', 40), tag, null);
+		var nameBytes = longHello.AsSpan(RemGroupPacket.HeaderSize, 32).ToArray();
+		Expect(nameBytes.All(b => b != 0) || nameBytes[nameBytes.ToList().IndexOf((byte)0)..].All(b => b == 0),
+			"A long hello name was not cut cleanly.");
+		Expect(Encoding.UTF8.GetString(nameBytes).TrimEnd('\0').Length <= 16, "A hello name overflowed into the tag.");
+
+		var bye = RemGroupPacket.BuildBye(clientId);
+		Expect(bye.Length == RemGroupPacket.HeaderSize, "A bye carries a payload it should not.");
+		Expect(RemGroupPacket.TryReadHeader(bye, out var byeType, out _, out _, out _) && byeType == RemPacketType.Bye,
+			"A bye was misread.");
+
+		// The roster: count, 49-byte entries with flags, one trailing flags byte.
+		var roster = new List<byte> { 2 };
+		var entry1 = new byte[49];
+		ticked[0].CopyTo(entry1, 0);
+		RemGroupPacket.EncodeName("iPhone").CopyTo(entry1.AsSpan(16));
+		entry1[48] = RemGroupPacket.MemberTickedUsFlag;
+		var entry2 = new byte[49];
+		clientId.CopyTo(entry2, 0);
+		RemGroupPacket.EncodeName("Pixel").CopyTo(entry2.AsSpan(16));
+		roster.AddRange(entry1);
+		roster.AddRange(entry2);
+		roster.Add(RemGroupPacket.ListHasPairSlotFlag);
+		Expect(RemRoster.TryRead(roster.ToArray(), out var members, out var listFlags) &&
+			members.Count == 2 && listFlags == RemGroupPacket.ListHasPairSlotFlag,
+			"A roster did not parse.");
+		Expect(members[0].Name == "iPhone" && members[0].TickedUs && !members[1].TickedUs,
+			"Roster names or tick flags were misread.");
+		Expect(members[0].IdHex == "100f0e0d0c0b0a090807060504030201", "A roster member id was misread.");
+
+		// The older 48-byte entries, from before server v2.9, still parse.
+		var legacy = new List<byte> { 1 };
+		legacy.AddRange(entry1.AsSpan(0, 48).ToArray());
+		legacy.Add(0);
+		Expect(RemRoster.TryRead(legacy.ToArray(), out var legacyMembers, out _) &&
+			legacyMembers.Count == 1 && legacyMembers[0].Name == "iPhone" && !legacyMembers[0].TickedUs,
+			"A 48-byte roster entry was misread.");
+		Expect(RemRoster.TryRead(new byte[] { 0, 0 }, out var nobody, out _) && nobody.Count == 0,
+			"An empty roster was misread.");
+		Expect(!RemRoster.TryRead(new byte[] { 1, 0 }, out _, out _), "A roster with a missing entry was accepted.");
+		Expect(!RemRoster.TryRead(new byte[] { 65, 0 }, out _, out _), "A roster past the 64-member limit was accepted.");
+
+		// Members get their own address in 240.0.0.0/5, like on Windows.
+		var memberAddress = RemGroupPacket.MemberAddress(clientId);
+		var firstOctet = memberAddress.GetAddressBytes()[0];
+		Expect(firstOctet is >= 240 and <= 247, "A group member address is not in 240.0.0.0/5.");
+		Expect(RemGroupPacket.MemberAddress(ticked[0]).Equals(RemGroupPacket.MemberAddress(ticked[0])),
+			"A member address is not stable for its client id.");
+
+		// Two ids agreeing in the first four bytes must not share an address:
+		// the later one (in id order) is nudged, deterministically per roster.
+		var collidingA = (byte[])ticked[0].Clone();
+		var collidingB = (byte[])ticked[0].Clone();
+		collidingB[15] ^= 0xFF;
+		var rosterIds = new[] { collidingA, collidingB };
+		var addressA = RemGroupPacket.MemberAddress(collidingA, rosterIds);
+		var addressB = RemGroupPacket.MemberAddress(collidingB, rosterIds);
+		Expect(!addressA.Equals(addressB), "Two colliding member ids were given the same address.");
+		Expect(RemGroupPacket.MemberAddress(collidingA, rosterIds).Equals(addressA) &&
+			RemGroupPacket.MemberAddress(collidingB, rosterIds).Equals(addressB),
+			"Collision resolution is not deterministic for its roster.");
+		Expect(RemGroupPacket.MemberAddress(collidingA, new[] { collidingA }).Equals(RemGroupPacket.MemberAddress(collidingA)),
+			"A lone member id did not keep its base address.");
+
+		// Group framing costs 16 bytes of datagram; a PCM frame must still fit.
+		Expect(RemGroupPacket.MaxAudioPayloadBytes == RemPacket.MaxAudioPayloadBytes - 16,
+			"The group audio budget is not 16 bytes under the ordinary one.");
+		Expect(RemSoundSender.PcmFrameSamples * 2 * 3 + RemCrypto.OverheadBytes + RemPcmFrame.SubHeaderSize
+			<= RemGroupPacket.MaxAudioPayloadBytes, "A PCM frame no longer fits one datagram in group framing.");
+
+		// One client id per installation, never all zero, surviving restarts.
+		var folder = Path.Combine(Path.GetTempPath(), "nvda-remote-audio-group-" + Guid.NewGuid().ToString("N"));
+		try
+		{
+			var first = RemSoundGroupIdentity.Resolve(folder);
+			var second = RemSoundGroupIdentity.Resolve(folder);
+			Expect(first.SequenceEqual(second), "The group client id changed between runs.");
+			Expect(first.Length == 16 && first.Any(b => b != 0), "The group client id is not 16 non-zero bytes.");
+			Expect(!RemSoundGroupIdentity.Resolve(Path.Combine(folder, "other")).SequenceEqual(first),
+				"Two installations were given the same group client id.");
+			File.WriteAllText(Path.Combine(folder, "remSoundGroupClientId"), "garbage");
+			var recovered = RemSoundGroupIdentity.Resolve(folder);
+			Expect(recovered.Length == 16 && recovered.Any(b => b != 0), "A damaged group client id file was not recovered from.");
+			File.WriteAllText(Path.Combine(folder, "remSoundGroupClientId"), new string('0', 32));
+			var rererolled = RemSoundGroupIdentity.Resolve(folder);
+			Expect(rererolled.Any(b => b != 0), "An all-zero group client id was kept.");
+		}
+		finally
+		{
+			try
+			{
+				Directory.Delete(folder, recursive: true);
+			}
+			catch (IOException)
+			{
+			}
+		}
+	}
+
 	private static void TestPeerSpecs()
 	{
 		Expect(RemPeerSpec.TryParse("192.168.1.20", out var plain) && plain.Port == 47830, "A bare address did not default to port 47830.");
@@ -300,6 +442,23 @@ internal static class RemSoundSelfTestCases
 			// A subscriber needs nothing but the password: a phone can find it by itself.
 			var listener = HelperOptions.Parse(["--transport", "remsound", "--role", "subscriber", "--password-env", variable]);
 			Expect(listener.Peers.Count == 0, "A bare RemSound receiver was refused.");
+
+			// The relay is one host; ticks are absent (everyone), empty (nobody), or a list.
+			var relayed = HelperOptions.Parse(["--transport", "remsound", "--role", "subscriber", "--password-env", variable,
+				"--relay", "relay.example.com", "--relay-ticks", "00112233445566778899aabbccddeeff"]);
+			Expect(relayed.RelayHost?.Host == "relay.example.com" && relayed.RelayHost?.Port == RemPacket.DefaultPort,
+				"The relay host was misparsed.");
+			Expect(relayed.RelayTicks?.Count == 1, "The relay tick list was misparsed.");
+			var nobody = HelperOptions.Parse(["--transport", "remsound", "--role", "subscriber", "--password-env", variable,
+				"--relay", "relay.example.com", "--relay-ticks", ""]);
+			Expect(nobody.RelayTicks is not null && nobody.RelayTicks.Count == 0,
+				"An empty --relay-ticks did not stay an explicit empty list.");
+			var everyone = HelperOptions.Parse(["--transport", "remsound", "--role", "subscriber", "--password-env", variable,
+				"--relay", "relay.example.com"]);
+			Expect(everyone.RelayTicks is null, "A missing --relay-ticks did not mean the whole group.");
+			ExpectRejected(["--transport", "remsound", "--role", "subscriber", "--password-env", variable,
+				"--relay", "relay.example.com", "--relay-ticks", "xyz"],
+				"a relay tick id that is not 32 hexadecimal characters");
 			ExpectRejected(["--transport", "remsound", "--role", "subscriber", "--password-env", variable, "--peers", "a b"],
 				"a RemSound peer with a space in it");
 		}

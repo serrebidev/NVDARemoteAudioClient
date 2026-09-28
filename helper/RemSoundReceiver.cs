@@ -313,6 +313,28 @@ internal sealed class RemSoundReceiver : IDisposable
 
 	private void NoteAuthenticated() => _consecutiveAuthFailures = 0;
 
+	/// <summary>
+	/// A relay group member left: drop their streams at once, so a stale session
+	/// cannot keep playing after they are gone. Sessions keyed by member address
+	/// never collide with peer-to-peer streams.
+	/// </summary>
+	public void DropMember(IPAddress address)
+	{
+		foreach (var key in _sessions.Keys.Where(candidate => candidate.Source.Address.Equals(address)).ToList())
+		{
+			_sessions[key].Dispose();
+			_sessions.Remove(key);
+			if (_active == key)
+			{
+				_active = null;
+			}
+		}
+		if (address.Equals(_announcedSource))
+		{
+			_announcedSource = null;
+		}
+	}
+
 	private void PruneSessions(TimeSpan now)
 	{
 		foreach (var stale in _sessions.Where(pair => now - pair.Value.LastPacket > SessionExpiry).Select(pair => pair.Key).ToList())

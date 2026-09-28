@@ -41,6 +41,17 @@
 
 <p>RemSound connections need no relay server and no port 6838 firewall rule. Allow <strong>UDP port 47830</strong> on both devices, and <strong>UDP 47821</strong> if you want discovery to find them. On an iPhone, allow the RemSound app local network access, or it cannot be found or reached.</p>
 
+<h2>Group calls through a RemSound V2 relay</h2>
+<p>A RemSound relay running server v2.9 or newer can carry a group of up to 64 devices that share one encryption password, instead of a single pair.</p>
+<ol>
+  <li>Set the <strong>same encryption password</strong> on every device. The password picks the group: devices with different passwords never hear each other.</li>
+  <li>Type the relay's address into <strong>RemSound relay for group calls</strong> in NVDA Remote Audio settings. Until the relay's member list arrives &mdash; and if the lists ever stop &mdash; everything falls back to device-to-device behavior.</li>
+  <li>Connect with <strong>Send and receive at the same time (RemSound)</strong>. This computer announces itself to the relay every two seconds with a persistent group identity, so the other devices keep recognizing it after a restart.</li>
+  <li>Open <strong>NVDA menu &gt; Tools &gt; NVDA Remote Audio &gt; Choose RemSound relay members...</strong> and tick the members to hear and be heard by. Ticking works both ways: the relay only forwards audio between members that ticked each other, so the other side has to tick this computer too. A member marked "has ticked you" already has.</li>
+  <li><strong>Hear everyone</strong> in that dialog returns to hearing the whole group.</li>
+</ol>
+<p>Changing the encryption password starts a new group on the relay: the old member selections are dropped, here and there, and the next announcement hears everyone again.</p>
+
 <h2>How "Automatic" startup works</h2>
 <p>If <code>C:\NVDARemoteAudioServer\NVDARemoteAudioServer.exe</code> or <code>%LOCALAPPDATA%\NVDARemoteAudioServer\NVDARemoteAudioServer.exe</code> exists on a machine, that machine sends. Otherwise it receives. Override this by changing <strong>Startup action</strong> in settings. A RemSound connection never needs the server installed, and <strong>Send and receive at the same time (RemSound)</strong> is chosen explicitly rather than automatically.</p>
 

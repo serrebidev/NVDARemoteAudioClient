@@ -6,6 +6,8 @@ internal sealed class HelperOptions
 	public AudioTransport Transport { get; private init; } = AudioTransport.NvdaRelay;
 	public IReadOnlyList<RemPeerSpec> Peers { get; private init; } = [];
 	public IReadOnlyList<string> PeerNames { get; private init; } = [];
+	public RemPeerSpec? RelayHost { get; private init; }
+	public IReadOnlyList<byte[]>? RelayTicks { get; private init; }
 	public int LocalPort { get; private init; } = RemPacket.DefaultPort;
 	public int DiscoveryPort { get; private init; } = RemPacket.DiscoveryPort;
 	public string DeviceName { get; private init; } = Environment.MachineName;
@@ -63,6 +65,12 @@ internal sealed class HelperOptions
 		  --device-name <name>   Name other RemSound devices see. Default: computer name
 		  --allow-remote-control Let RemSound peers that share the password change this
 		                        computer's volume
+		  --relay <host[:port]>  Join a RemSound V2 relay as a group member. The relay
+		                        is also a peer; group framing switches on once its
+		                        member list arrives
+		  --relay-ticks <ids>    Comma-separated 16-byte group client ids to hear in the
+		                        relay group. Present-but-empty hears nobody; leaving
+		                        the flag off hears the whole group
 
 		Common:
 		  --port <port>          Default: 6838
@@ -259,6 +267,44 @@ internal sealed class HelperOptions
 			var peerNames = SplitList(values.GetValueOrDefault("peer-names", ""))
 				.Where(name => name.Length <= 128 && !name.Any(char.IsControl))
 				.ToList();
+			RemPeerSpec? relayHost = null;
+			var relayText = values.GetValueOrDefault("relay", "").Trim();
+			if (relayText.Length > 0)
+			{
+				if (!RemPeerSpec.TryParse(relayText, out relayHost))
+				{
+					throw new ArgumentException($"'{relayText}' is not a host name or address.");
+				}
+			}
+			List<byte[]>? relayTicks = null;
+			// The flag being present at all is the choice: present-but-empty is an
+			// explicit empty tick list (hear nobody), absent is the legacy hello
+			// with no tick list (hear the whole group).
+			if (values.ContainsKey("relay-ticks"))
+			{
+				relayTicks = [];
+				foreach (var entry in SplitList(values["relay-ticks"]))
+				{
+					byte[] id;
+					try
+					{
+						id = Convert.FromHexString(entry);
+					}
+					catch (FormatException)
+					{
+						throw new ArgumentException($"'{entry}' is not a 16-byte group client id.");
+					}
+					if (id.Length != RemGroupPacket.ClientIdBytes || id.All(b => b == 0))
+					{
+						throw new ArgumentException($"'{entry}' is not a 16-byte group client id.");
+					}
+					relayTicks.Add(id);
+				}
+				if (relayTicks.Count > RemGroupPacket.MaxTicked)
+				{
+					throw new ArgumentException("--relay-ticks carries at most 64 client ids.");
+				}
+			}
 			return new HelperOptions
 			{
 				Role = role,
@@ -267,6 +313,8 @@ internal sealed class HelperOptions
 				Key = "",
 				Peers = peers,
 				PeerNames = peerNames,
+				RelayHost = relayHost,
+				RelayTicks = relayTicks,
 				LocalPort = ParseInt(values, "local-port", RemPacket.DefaultPort, 1, 65535),
 				DiscoveryPort = ParseInt(values, "discovery-port", RemPacket.DiscoveryPort, 0, 65535),
 				DeviceName = ParseDeviceName(values),

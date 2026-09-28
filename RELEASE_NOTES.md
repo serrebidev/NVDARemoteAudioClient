@@ -1,5 +1,22 @@
 # NVDA Remote Audio Client release notes
 
+## 0.2.11
+
+### Group calls through a RemSound V2 relay
+
+- A RemSound relay running server v2.9 or newer can now carry a group of up to 64 devices that share one encryption password, instead of a single pair. This is the feature requested in issue #6.
+- Type the relay's address into the new **RemSound relay for group calls** setting. The relay stays an ordinary peer too: until its member list arrives, and if the lists ever stop, everything falls back to device-to-device behavior.
+- **NVDA menu > Tools > NVDA Remote Audio > Choose RemSound relay members...** opens a checklist of the group's members. Ticking works both ways, like the phone app: the relay only forwards audio between members that ticked each other, and a member marked "has ticked you" already has. **Hear everyone** returns to the whole group.
+- This computer announces itself to the relay every two seconds with a persistent group identity — 16 random bytes kept for the life of the installation — so the other devices keep recognizing it after a restart, and it says goodbye when the connection closes.
+- Changing the encryption password starts a new group on the relay: the saved member selections are dropped, here and there, and the next announcement hears everyone again.
+- Under the hood: audio, format, heartbeat and volume packets travel in group framing (the ordinary header with version 2 and the sender's client id) while the relay's member list is fresh; heartbeats also go out in ordinary form so a phone or an older app holding one of the relay's pair slots keeps working; the relay's address check is still echoed verbatim, never in group framing; group audio is keyed per member, and a member that leaves has its streams dropped at once.
+
+### Testing
+
+- New `TestRelayGroups` in the helper self-test: group header round trip, ordinary/wrapped rejection both ways, the legacy 40-byte hello and the ticked hello layout, name truncation on a character boundary, bye, current and legacy roster parsing, malformed roster rejection, the 240.0.0.0/5 member addresses, the 16-byte group audio budget, and group client id persistence, damage recovery, and all-zero rejection.
+- `TestOptions` gains the relay switches: `--relay-ticks` absent means the whole group, present-but-empty means an explicit empty list, and a bad id is rejected.
+- `tools/selftest_addon.py`: the RemSound command-line test passes a relay and tick list through; `testRelayTickNormalization` covers the None/empty/invalid/deduplicated cases and the single-relay rule; the event test feeds `relay_members` rosters and requires joins and leaves to be announced exactly once each, and silence when nothing changed.
+
 ## 0.2.10
 
 ### A Wired latency profile, for a sender on a cable

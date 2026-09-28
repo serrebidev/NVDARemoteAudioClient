@@ -16,10 +16,20 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
 import types
+
+# The plugin builds a Windows STARTUPINFO for the helper process; that name
+# does not exist on other platforms, so the launch tests stand in for it.
+if not hasattr(subprocess, "STARTUPINFO"):
+	class _StartupInfo:
+		def __init__(self):
+			self.dwFlags = 0
+	subprocess.STARTUPINFO = _StartupInfo
+	subprocess.STARTF_USESHOWWINDOW = 1
 
 # Importing the plugin out of addon/ must not leave .pyc files behind: the
 # add-on tree is what gets packaged, and run-tests.ps1 rightly refuses to build
@@ -65,6 +75,28 @@ def _module(name, **attrs):
 
 
 def installNVDAStubs(configPath):
+	# server_installer imports winreg at module level; it only exists on
+	# Windows, so the self-test stands in for it everywhere else.
+	if "winreg" not in sys.modules:
+		try:
+			import winreg  # noqa: F401
+		except ImportError:
+			class _WinRegKey:
+				def __enter__(self):
+					return self
+				def __exit__(self, *args):
+					return False
+			_winreg = _module("winreg",
+				HKEY_CURRENT_USER=object(),
+				KEY_SET_VALUE=0,
+				KEY_QUERY_VALUE=0,
+				REG_SZ=1,
+				CreateKeyEx=lambda *a, **k: _WinRegKey(),
+				OpenKey=lambda *a, **k: _WinRegKey(),
+				SetValueEx=lambda *a, **k: None,
+				DeleteValue=lambda *a, **k: None,
+				QueryValueEx=lambda *a, **k: ("", 1))
+			del _winreg
 	class Log:
 		def __getattr__(self, level):
 			def emit(*args, **kwargs):
@@ -213,8 +245,27 @@ def installNVDAStubs(configPath):
 		TextDataObject=object,
 		TheClipboard=types.SimpleNamespace(Open=lambda: False, SetData=None, Close=None),
 		EVT_MENU=None,
+		EVT_BUTTON=None,
+		EVT_CHECKLISTBOX=None,
 		OK=1,
 		ICON_INFORMATION=2,
+		ICON_ERROR=4,
+		ID_CANCEL=5101,
+		TE_PASSWORD=0,
+		ALL=0,
+		LEFT=0,
+		RIGHT=0,
+		EXPAND=0,
+		ALIGN_RIGHT=0,
+		VERTICAL=0,
+		HORIZONTAL=0,
+		Dialog=object,
+		BoxSizer=object,
+		StaticText=object,
+		CheckListBox=object,
+		MultiChoiceDialog=object,
+		SingleChoiceDialog=object,
+		TextEntryDialog=object,
 	)
 
 
@@ -559,6 +610,30 @@ def testHelperEventHandling(mod):
 	client._handleLine(json.dumps({"event": "status", "message": "Reconnecting to host:6838."}))
 	check("unrecognized status is not spoken", spoken, [])
 
+	# The relay roster is kept and membership changes are announced once each.
+	del spoken[:]
+	roster = lambda members, **kw: json.dumps(dict({"event": "relay_members", "members": members}, **kw))
+	client._handleLine(roster([
+		{"id": "aa", "name": "iPhone", "ticked_by_them": True, "ticked_by_me": True},
+		{"id": "bb", "name": "Pixel", "ticked_by_them": False, "ticked_by_me": False},
+	], joined=True, message="Joined the relay group: 2 member(s)."))
+	check("joining the group is announced", len(spoken), 1)
+	check_true("the roster is kept", len(client.relayMembers) == 2)
+	del spoken[:]
+	client._handleLine(roster([
+		{"id": "aa", "name": "iPhone", "ticked_by_them": True, "ticked_by_me": True},
+		{"id": "bb", "name": "Pixel", "ticked_by_them": False, "ticked_by_me": False},
+	], message="Relay group: 2 member(s)."))
+	check("an unchanged roster says nothing", spoken, [])
+	del spoken[:]
+	client._handleLine(roster([
+		{"id": "aa", "name": "iPhone", "ticked_by_them": True, "ticked_by_me": True},
+		{"id": "cc", "name": "Studio", "ticked_by_them": False, "ticked_by_me": False},
+	], message="Relay group: 2 member(s)."))
+	check("one join and one leave are announced", len(spoken), 2)
+	check_true("the join names the device", "Studio" in spoken[0])
+	check_true("the leave names the device", "Pixel" in spoken[1])
+
 	# Diagnostics arrive every five seconds; speaking them would be unusable, but
 	# they must still be captured for the diagnostics report.
 	del spoken[:]
@@ -853,6 +928,24 @@ def testRemSoundPeerParsing(mod):
 		mod._parsePeerList("pc.local, bad host, 192.168.1.20"), ["pc.local", "192.168.1.20"])
 
 
+def testRelayTickNormalization(mod):
+	"""Tick ids survive the config round trip; only None means everyone."""
+	check("no ticks chosen stays None", mod._normalizeConfig({})["remSoundRelayTicks"], None)
+	check("junk ticks become an empty list",
+		mod._normalizeConfig({"remSoundRelayTicks": "xyz"})["remSoundRelayTicks"], [])
+	check("one bad id does not spoil the good ones",
+		mod._normalizeConfig({"remSoundRelayTicks": ["xyz", "00112233445566778899aabbccddeeff"]})["remSoundRelayTicks"],
+		["00112233445566778899aabbccddeeff"])
+	check("ids are lowercased and deduplicated",
+		mod._normalizeConfig({"remSoundRelayTicks": "AABBCCDDEEFF00112233445566778899, aabbccddeeff00112233445566778899"})["remSoundRelayTicks"],
+		["aabbccddeeff00112233445566778899"])
+	check("the relay keeps one host",
+		mod._normalizeConfig({"remSoundRelay": "relay.example.com, other.example"})["remSoundRelay"],
+		"relay.example.com")
+	check("a bad relay is dropped",
+		mod._normalizeConfig({"remSoundRelay": "not a host"})["remSoundRelay"], "")
+
+
 def testRemSoundDeviceNames(mod):
 	check("a comma-separated list is split", mod._parseDeviceNames("iPhone, Pixel 8"), ["iPhone", "Pixel 8"])
 	check("a list is accepted", mod._parseDeviceNames(["iPhone", "Pixel 8"]), ["iPhone", "Pixel 8"])
@@ -945,6 +1038,38 @@ def testRemSoundHelperArguments(mod):
 		env.get("NVDA_REMOTE_AUDIO_PASSWORD"), "plexbox")
 	check_true("remote control is off unless asked for", "--allow-remote-control" not in args)
 	check_true("a receiver does not send", "--bitrate" not in args)
+
+	# A RemSound relay joins the group and passes the chosen ticks.
+	group = mod._normalizeConfig({
+		"transport": "remsound", "password": "plexbox",
+		"remSoundRelay": "relay.example.com",
+		"remSoundRelayTicks": ["00112233445566778899aabbccddeeff", "bad"],
+	})
+	args, env = mod._helperArguments("duplex", group)
+	check("the relay is passed", args[args.index("--relay") + 1], "relay.example.com")
+	check("only valid tick ids are passed",
+		args[args.index("--relay-ticks") + 1], "00112233445566778899aabbccddeeff")
+	# Nobody ticked is an explicit empty list: the flag must still be passed.
+	nobody = mod._normalizeConfig({
+		"transport": "remsound", "password": "plexbox",
+		"remSoundRelay": "relay.example.com", "remSoundRelayTicks": [],
+	})
+	args, env = mod._helperArguments("subscriber", nobody)
+	check_true("an empty tick list still passes the flag", "--relay-ticks" in args)
+	check("an empty tick list passes no ids", args[args.index("--relay-ticks") + 1], "")
+	# No ticks chosen is the legacy hello: the flag stays away entirely.
+	everyone = mod._normalizeConfig({
+		"transport": "remsound", "password": "plexbox", "remSoundRelay": "relay.example.com",
+	})
+	args, env = mod._helperArguments("subscriber", everyone)
+	check_true("hearing everyone passes no tick flag", "--relay-ticks" not in args)
+	# No relay configured means no relay flag at all.
+	direct = mod._normalizeConfig({
+		"transport": "remsound", "password": "plexbox",
+		"remSoundPeers": ["phone.example.com"],
+	})
+	args, env = mod._helperArguments("subscriber", direct)
+	check_true("no relay means no relay flag", "--relay" not in args)
 
 	# The relay path keeps its host and key and gains no RemSound switch at all.
 	relay = mod._normalizeConfig({
@@ -1073,6 +1198,7 @@ def main():
 			testServerStatusIsReadable,
 			testRemSoundPeerParsing,
 			testRemSoundDeviceNames,
+			testRelayTickNormalization,
 			testConnectionProblems,
 			testRemSoundHelperArguments,
 			testLiveVolumeAndRemoteControl,

@@ -61,6 +61,18 @@ This computer keeps one device identity for the life of the installation, so the
 
 RemSound connections use UDP port 47830, with discovery on UDP 47821, and need no relay server at all.
 
+### Group calls through a RemSound V2 relay
+
+A RemSound relay running server v2.9 or newer can carry a group of up to 64 devices that share one encryption password, instead of a single pair.
+
+1. On every device, set the **same encryption password**. The password picks the group: devices with different passwords never hear each other.
+2. On this computer, type the relay's address into **RemSound relay for group calls** in NVDA Remote Audio settings. The relay is also an ordinary peer: until its member list arrives, and if the lists ever stop, everything falls back to device-to-device behavior.
+3. Connect with **Send and receive at the same time (RemSound)**. This computer announces itself to the relay every two seconds with a persistent group identity, so the other devices keep recognizing it after a restart.
+4. Open **NVDA menu > Tools > NVDA Remote Audio > Choose RemSound relay members...** and tick the members to hear and be heard by. Ticking works both ways: the relay only forwards audio between members that ticked each other, so the other side has to tick this computer too. A member marked "has ticked you" already has.
+5. **Hear everyone** in that dialog returns to hearing the whole group.
+
+Changing the encryption password starts a new group on the relay: the old member selections are dropped, here and there, and the next announcement hears everyone again.
+
 ## Audio choices
 
 **Audio to send** defaults to the full system mix with NVDA excluded at the Windows audio layer. To send one application, start it and make it create an audio session before opening settings. Reconnect remote audio if that application restarts. To send a microphone instead — which is how a phone hears this computer on a RemSound connection — choose **Microphone: Windows default recording device** or a named device from the same list.

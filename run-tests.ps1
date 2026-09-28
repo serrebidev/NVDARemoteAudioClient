@@ -68,7 +68,7 @@ try {
 	if ($LASTEXITCODE -ne 0) {
 		throw "Helper --help failed with exit code $LASTEXITCODE"
 	}
-	foreach ($expected in '--role', '--host', '--key', '--opus-frame-ms', '--disable-fec', '--prebuffer-ms', '--include-process-name', '--output-device-id', '--receive-volume', '--receive-pan', '--bass-db', '--mid-db', '--treble-db', '--password-env', '--codec', '--record-folder', '--list-audio-apps', '--list-output-devices', '--self-test', '--transport', '--peers', '--peer-names', '--device-name', '--local-port', '--discovery-port', '--allow-remote-control', '--capture-device-id', '--list-input-devices', '--discover-peers') {
+	foreach ($expected in '--role', '--host', '--key', '--opus-frame-ms', '--disable-fec', '--prebuffer-ms', '--include-process-name', '--output-device-id', '--receive-volume', '--receive-pan', '--bass-db', '--mid-db', '--treble-db', '--password-env', '--codec', '--record-folder', '--list-audio-apps', '--list-output-devices', '--self-test', '--transport', '--peers', '--peer-names', '--device-name', '--local-port', '--discovery-port', '--allow-remote-control', '--capture-device-id', '--list-input-devices', '--discover-peers', '--relay', '--relay-ticks') {
 		Assert-Contains $helpText $expected
 	}
 

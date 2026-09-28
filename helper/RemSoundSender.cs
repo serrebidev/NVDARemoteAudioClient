@@ -161,12 +161,15 @@ internal sealed class RemSoundSender : IDisposable
 			_plain[(i * 3) + 2] = (byte)(sample >> 8);
 		}
 		var sealedLength = RemCrypto.EncryptInto(_gcm, _nonces, _plain.AsSpan(0, plainLength), _sealed);
-		var parts = (sealedLength + RemPacket.MaxAudioPayloadBytes - 1) / RemPacket.MaxAudioPayloadBytes;
+		// Group framing adds 16 bytes to the header, so parts shrink while a
+		// relay's member list is fresh; the link wraps each part on the way out.
+		var maxPart = _link.GroupModeActive ? RemGroupPacket.MaxAudioPayloadBytes : RemPacket.MaxAudioPayloadBytes;
+		var parts = (sealedLength + maxPart - 1) / maxPart;
 		var frameId = _pcmFrameId++;
 		for (var part = 0; part < parts; part++)
 		{
-			var offset = part * RemPacket.MaxAudioPayloadBytes;
-			var partLength = Math.Min(RemPacket.MaxAudioPayloadBytes, sealedLength - offset);
+			var offset = part * maxPart;
+			var partLength = Math.Min(maxPart, sealedLength - offset);
 			RemPacket.WriteHeader(_packet, RemPacketType.Audio, _streamId, _audioSequence++);
 			RemPcmFrame.WriteSubHeader(_packet.AsSpan(RemPacket.HeaderSize), frameId, (byte)part, (byte)parts);
 			_sealed.AsSpan(offset, partLength).CopyTo(_packet.AsSpan(RemPacket.HeaderSize + RemPcmFrame.SubHeaderSize));

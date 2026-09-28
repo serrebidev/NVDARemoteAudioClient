@@ -21,7 +21,13 @@ internal enum RemPacketType : byte
 	KeepAlive = 3,
 	Heartbeat = 4,
 	Control = 5,
-	// 6-9 are the relay's v2 lobby messages, which no client port emits.
+	// 6-9 are the V2 relay's group messages. This client sends Hello and Bye in
+	// group framing when it joins a relay group, and reads the relay's Roster and
+	// Full. They never travel peer to peer. See RemSoundRelayGroup.cs.
+	Hello = 6,
+	Roster = 7,
+	Full = 8,
+	Bye = 9,
 	AddrCheck = 10,
 }
 

@@ -60,6 +60,6 @@ internal static class RemSoundIdentity
 	internal static string? Normalize(string? text) =>
 		Guid.TryParse((text ?? "").Trim(), out var id) && id != Guid.Empty ? id.ToString("D") : null;
 
-	private static string DefaultFolder() =>
+	internal static string DefaultFolder() =>
 		Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), FolderName);
 }

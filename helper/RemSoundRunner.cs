@@ -67,6 +67,8 @@ internal static class RemSoundRunner
 			DeviceName = options.DeviceName,
 			Peers = options.Peers,
 			PeerNames = options.PeerNames,
+			RelayHost = options.RelayHost,
+			RelayTicks = options.RelayTicks,
 			Password = options.Password,
 			CanSend = sends,
 			CanReceive = receives,
@@ -95,7 +97,9 @@ internal static class RemSoundRunner
 					options.TrebleDb);
 				recorder = new ReceivedAudioRecorder(options.RecordFolder, SampleRate, 2);
 				receiver = new RemSoundReceiver(link, playback, recorder);
-				link.AudioPacketReceived = receiver.OnPacket;
+				var audioReceiver = receiver;
+				link.AudioPacketReceived = audioReceiver.OnPacket;
+				link.MemberDeparted = address => audioReceiver.DropMember(address);
 				playbackControls = LiveControls.RegisterPlayback(playback);
 			}
 
@@ -184,6 +188,7 @@ internal static class RemSoundRunner
 			playbackControls?.Dispose();
 			link.AudioPacketReceived = null;
 			link.ControlReceived = null;
+			link.MemberDeparted = null;
 			link.Dispose();
 			receiver?.Dispose();
 			recorder?.Dispose();
