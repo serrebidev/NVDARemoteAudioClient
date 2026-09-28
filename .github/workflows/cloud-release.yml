@@ -1,0 +1,40 @@
+name: Cloud Release
+
+# Cloud release pipeline. dry_run=true (default) builds everything and uploads
+# the artifact, publishing nothing. dry_run=false builds and publishes a
+# GitHub release.
+#   gh workflow run cloud-release.yml -f dry_run=true
+#   gh workflow run cloud-release.yml -f dry_run=false
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build only; publish nothing'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build add-on
+        shell: powershell
+        run: ./build.ps1
+      - name: Upload artifact (dry run)
+        uses: actions/upload-artifact@v4
+        with:
+          name: addon
+          path: |
+            dist/*.nvda-addon
