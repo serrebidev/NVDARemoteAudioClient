@@ -32,9 +32,24 @@ jobs:
       - name: Build add-on
         shell: powershell
         run: ./build.ps1
+      - name: Read version
+        id: version
+        shell: powershell
+        run: |
+          $v = (Select-String -Path 'addon/manifest.ini' -Pattern '^version\s*=\s*(.+)$').Matches[0].Groups[1].Value.Trim()
+          "version=$v" >> $env:GITHUB_OUTPUT
       - name: Upload artifact (dry run)
+        if: ${{ inputs.dry_run }}
         uses: actions/upload-artifact@v4
         with:
-          name: addon
+          name: addon-${{ steps.version.outputs.version }}
           path: |
+            dist/*.nvda-addon
+      - name: Publish release
+        if: ${{ !inputs.dry_run }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          files: |
             dist/*.nvda-addon
