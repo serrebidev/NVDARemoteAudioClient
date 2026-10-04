@@ -22,7 +22,7 @@ import sys
 
 REPO_ROOT = os.path.dirname(os.path.abspath(os.path.dirname(__file__)))
 HELPER_EXE = os.path.join(
-    REPO_ROOT, "helper", "bin", "Release", "net9.0-windows", "NVDARemoteAudioHelper.exe"
+    REPO_ROOT, "helper", "bin", "Release", "net10.0-windows", "NVDARemoteAudioHelper.exe"
 )
 ADDON_SUITE = [sys.executable, os.path.join(REPO_ROOT, "tools", "selftest_addon.py")]
 

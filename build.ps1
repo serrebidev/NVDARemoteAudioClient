@@ -8,7 +8,7 @@ only the runtime add-on files into a clean temporary directory, validates the
 archive shape, and writes remoteAudioClient-<version>.nvda-addon under dist/.
 
 Requires:
-  - .NET 9 SDK (https://dotnet.microsoft.com/download)
+  - .NET 10 SDK (https://dotnet.microsoft.com/download)
   - Python for syntax validation
   - Windows 10 build 20348+ at runtime (process-loopback exclusion API)
 

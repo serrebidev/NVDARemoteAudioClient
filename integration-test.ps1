@@ -23,7 +23,7 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = $PSScriptRoot
-$helperExe = Join-Path $repoRoot 'helper\bin\Release\net9.0-windows\NVDARemoteAudioHelper.exe'
+$helperExe = Join-Path $repoRoot 'helper\bin\Release\net10.0-windows\NVDARemoteAudioHelper.exe'
 $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("remote-audio-integration-{0}" -f [guid]::NewGuid())
 
 function Start-RedirectedProcess {

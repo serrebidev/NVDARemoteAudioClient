@@ -14,7 +14,7 @@ The helper logs structured JSON events to stdout, one per line. The add-on parse
 
 ## Requires
 
-- .NET 9 SDK to build (https://dotnet.microsoft.com/download).
+- .NET 10 SDK to build (https://dotnet.microsoft.com/download).
 - Windows 10 build **20348 or newer** at runtime, for the WASAPI process-loopback exclusion API. Earlier Windows builds will fail to activate the audio interface.
 
 ## Build

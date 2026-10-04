@@ -85,16 +85,16 @@ internal sealed class InputDeviceCapture
 		}
 
 		using (device)
-		using (var capture = new WasapiCapture(device, useEventSync: true, audioBufferMillisecondsLength: 20))
+		using (var capture = new WasapiRecorderBuilder().WithDevice(device).WithEventSync().WithBufferLength(20).Build())
 		{
 			var format = capture.WaveFormat;
 			var converter = new Converter(format);
 			var stopped = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
-			capture.DataAvailable += (_, args) =>
+			capture.DataAvailable += (buffer, _, _, _) =>
 			{
 				try
 				{
-					converter.Convert(args.Buffer.AsSpan(0, args.BytesRecorded), samples => AppendSamples(samples, writer));
+					converter.Convert(buffer, samples => AppendSamples(samples, writer));
 				}
 				catch (Exception ex)
 				{
@@ -215,14 +215,14 @@ internal sealed class InputDeviceCapture
 			ReadOnlySpan<float> stereo = _stereo.AsSpan(0, frames * Channels);
 			if (_resampler is not null)
 			{
-				var needed = _resampler.ResamplePrepare(frames, Channels, out var inBuffer, out var inOffset);
-				stereo[..(needed * Channels)].CopyTo(inBuffer.AsSpan(inOffset));
+				var needed = _resampler.ResamplePrepare(frames, Channels, out var inBuffer);
+				stereo[..(needed * Channels)].CopyTo(inBuffer);
 				var maxOut = (frames * 4) + 64;
 				if (_resampled.Length < maxOut * Channels)
 				{
 					_resampled = new float[maxOut * Channels];
 				}
-				var produced = _resampler.ResampleOut(_resampled, 0, needed, maxOut, Channels);
+				var produced = _resampler.ResampleOut(_resampled, needed, maxOut, Channels);
 				stereo = _resampled.AsSpan(0, produced * Channels);
 			}
 

@@ -130,7 +130,7 @@ Settings are stored in `%APPDATA%\nvda\remoteAudioClient.json`. Recordings defau
 
 ## Building
 
-Install the .NET 9 SDK and Python, then run:
+Install the .NET 10 SDK and Python, then run:
 
 ```powershell
 .\run-tests.ps1

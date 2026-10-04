@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net9.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -12,10 +12,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Concentus" Version="2.2.2" />
-    <PackageReference Include="Concentus.Native" Version="1.5.2" />
-    <PackageReference Include="Concentus.Native.NetCore" Version="1.5.2" />
-    <PackageReference Include="NAudio" Version="2.3.0" />
+    <PackageReference Include="Concentus" Version="*" />
+    <PackageReference Include="Concentus.Native" Version="*" />
+    <PackageReference Include="Concentus.Native.NetCore" Version="*" />
+    <PackageReference Include="NAudio" Version="*" />
   </ItemGroup>
 
 </Project>

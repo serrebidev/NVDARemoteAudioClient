@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
-using NAudio.CoreAudioApi.Interfaces;
 using NAudio.Dsp;
 using NAudio.Wave;
 
@@ -16,7 +15,7 @@ internal sealed class PlaybackSink : IDisposable
 
 	private readonly LowLatencyFloatProvider _provider;
 	private readonly MMDeviceEnumerator _deviceEnumerator;
-	private readonly EndpointWatcher _endpointWatcher;
+	private readonly MMDeviceNotificationClient? _endpointWatcher;
 	private readonly string _outputDeviceId;
 	private readonly int _desiredLatencyMs;
 	private readonly object _outputLock = new();
@@ -76,10 +75,16 @@ internal sealed class PlaybackSink : IDisposable
 		// listening to: silence with no error, which on a receiver whose whole job is
 		// carrying audio is indistinguishable from the sender having stopped. Watch
 		// for it and re-open on the endpoint that is actually current.
-		_endpointWatcher = new EndpointWatcher(this);
 		try
 		{
-			_deviceEnumerator.RegisterEndpointNotificationCallback(_endpointWatcher);
+			_endpointWatcher = _deviceEnumerator.CreateNotificationClient();
+			_endpointWatcher.DefaultDeviceChanged += (_, e) =>
+			{
+				if (_outputDeviceId.Length == 0 && e.Flow == DataFlow.Render && e.Role == DefaultEndpointRole)
+					InvalidateOutput();
+			};
+			_endpointWatcher.DeviceStateChanged += (_, e) => OnPinnedDeviceChanged(e.DeviceId);
+			_endpointWatcher.DeviceRemoved += (_, e) => OnPinnedDeviceChanged(e.DeviceId);
 		}
 		catch (Exception ex)
 		{
@@ -99,14 +104,14 @@ internal sealed class PlaybackSink : IDisposable
 	/// </summary>
 	private IWavePlayer CreateOutput(bool firstOpen)
 	{
-		WasapiOut? wasapi = null;
+		WasapiPlayer? wasapi = null;
 		MMDevice? device = null;
 		try
 		{
 			device = _outputDeviceId.Length == 0
 				? _deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Render, DefaultEndpointRole)
 				: _deviceEnumerator.GetDevice(_outputDeviceId);
-			wasapi = new WasapiOut(device, NAudio.CoreAudioApi.AudioClientShareMode.Shared, useEventSync: true, latency: _desiredLatencyMs);
+			wasapi = new WasapiPlayerBuilder().WithDevice(device).WithSharedMode().WithEventSync().WithLatency(_desiredLatencyMs).Build();
 			wasapi.Init(_provider);
 			wasapi.PlaybackStopped += OnPlaybackStopped;
 			_selectedDevice?.Dispose();
@@ -128,16 +133,16 @@ internal sealed class PlaybackSink : IDisposable
 			{
 				throw new InvalidOperationException("The selected playback device is unavailable or could not be opened. Choose another device in NVDA Remote Audio settings.", ex);
 			}
-			JsonLog.Write("status", "WASAPI playback initialization failed; falling back to WaveOutEvent.", new Dictionary<string, object?>
+			JsonLog.Write("status", "WASAPI playback initialization failed; falling back to WaveOut.", new Dictionary<string, object?>
 			{
 				["type"] = ex.GetType().Name,
 				["detail"] = ex.Message,
 				["reopened"] = !firstOpen,
 			});
 
-			var waveOut = new WaveOutEvent
+			var waveOut = new WaveOut
 			{
-				DesiredLatency = Math.Max(30, _desiredLatencyMs),
+				BufferMilliseconds = Math.Max(30, _desiredLatencyMs) / 2,
 				NumberOfBuffers = 2,
 			};
 			waveOut.Init(_provider);
@@ -230,47 +235,11 @@ internal sealed class PlaybackSink : IDisposable
 	/// than set a flag: re-opening a WASAPI client from inside the callback risks
 	/// deadlocking against the audio service.
 	/// </summary>
-	private sealed class EndpointWatcher : IMMNotificationClient
+	private void OnPinnedDeviceChanged(string? deviceId)
 	{
-		private readonly PlaybackSink _sink;
-
-		public EndpointWatcher(PlaybackSink sink) => _sink = sink;
-
-		public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
-		{
-			// Only matters while following the default; a pinned device stays pinned.
-			if (_sink._outputDeviceId.Length == 0 && flow == DataFlow.Render && role == DefaultEndpointRole)
-			{
-				_sink.InvalidateOutput();
-			}
-		}
-
-		public void OnDeviceStateChanged(string deviceId, DeviceState newState)
-		{
-			// A pinned device that was unplugged and came back gets another try.
-			if (_sink._outputDeviceId.Length != 0
-				&& string.Equals(deviceId, _sink._outputDeviceId, StringComparison.OrdinalIgnoreCase))
-			{
-				_sink.InvalidateOutput();
-			}
-		}
-
-		public void OnDeviceRemoved(string deviceId)
-		{
-			if (_sink._outputDeviceId.Length != 0
-				&& string.Equals(deviceId, _sink._outputDeviceId, StringComparison.OrdinalIgnoreCase))
-			{
-				_sink.InvalidateOutput();
-			}
-		}
-
-		public void OnDeviceAdded(string pwstrDeviceId)
-		{
-		}
-
-		public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key)
-		{
-		}
+		if (_outputDeviceId.Length != 0
+			&& string.Equals(deviceId, _outputDeviceId, StringComparison.OrdinalIgnoreCase))
+			InvalidateOutput();
 	}
 
 	public int CurrentBufferMs => _provider.CurrentBufferMs;
@@ -338,7 +307,7 @@ internal sealed class PlaybackSink : IDisposable
 			_disposed = true;
 			try
 			{
-				_deviceEnumerator.UnregisterEndpointNotificationCallback(_endpointWatcher);
+				_endpointWatcher?.Dispose();
 			}
 			catch
 			{
@@ -489,11 +458,13 @@ internal sealed class PlaybackSink : IDisposable
 			return _armed;
 		}
 
-		public int Read(byte[] buffer, int offset, int count)
+		public int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+
+		public int Read(Span<byte> destinationBytes)
 		{
+			var count = destinationBytes.Length;
 			renderThreadBoost ??= new WindowsAudioThreadBoost("Pro Audio");
 
-			var destinationBytes = buffer.AsSpan(offset, count);
 			if (count % sizeof(float) != 0)
 			{
 				destinationBytes.Clear();
@@ -606,7 +577,7 @@ internal sealed class PlaybackSink : IDisposable
 		private void ReadThroughResampler(Span<float> output, int outFrames)
 		{
 			var outFloats = outFrames * _channels;
-			var inputFramesNeeded = _driftResampler.ResamplePrepare(outFrames, _channels, out var inputBuffer, out var inputOffset);
+			var inputFramesNeeded = _driftResampler.ResamplePrepare(outFrames, _channels, out var inputBuffer);
 			_lastInputFramesAvailable = inputFramesNeeded;
 			if (inputFramesNeeded <= 0)
 			{
@@ -625,7 +596,7 @@ internal sealed class PlaybackSink : IDisposable
 			var floatsGot = bytesGot / sizeof(float);
 			var framesGot = floatsGot / _channels;
 
-			_resamplerInputScratch.AsSpan(0, inputFloatsNeeded).CopyTo(inputBuffer.AsSpan(inputOffset, inputFloatsNeeded));
+			_resamplerInputScratch.AsSpan(0, inputFloatsNeeded).CopyTo(inputBuffer[..inputFloatsNeeded]);
 			ResampleOutAndCopy(output, outFrames);
 			Interlocked.Add(ref _bytesReadOutputForDriftEst, outFloats * sizeof(float));
 
@@ -667,7 +638,7 @@ internal sealed class PlaybackSink : IDisposable
 				_resamplerOutputScratch = new float[outFloats];
 			}
 
-			var producedFrames = _driftResampler.ResampleOut(_resamplerOutputScratch, 0, _lastInputFramesAvailable, outFrames, _channels);
+			var producedFrames = _driftResampler.ResampleOut(_resamplerOutputScratch, _lastInputFramesAvailable, outFrames, _channels);
 			var producedFloats = producedFrames * _channels;
 			for (var i = 0; i < producedFloats; i++)
 			{
