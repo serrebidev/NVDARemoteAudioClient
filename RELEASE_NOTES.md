@@ -1,5 +1,19 @@
 # NVDA Remote Audio Client release notes
 
+## 0.2.12
+
+### Updated to .NET 10 and current dependencies
+
+- The helper now targets .NET 10 and its .NET packages are on their current
+  releases, with the version pins removed. NAudio 3 needed an API migration, so
+  the capture and playback paths were rewritten against it. Audio behaviour is
+  unchanged; the relay protocol, the encryption, the quality modes and the user
+  interface are all as before.
+- Installing needs the .NET 10 runtime. The helper is still self-contained, so
+  an installed copy carries its own runtime and this does not affect it.
+- GitHub Actions moved to the current publisher releases, so their JavaScript
+  runs on Node 24.
+
 ## 0.2.11
 
 ### Group calls through a RemSound V2 relay
