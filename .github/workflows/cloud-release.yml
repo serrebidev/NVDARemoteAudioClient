@@ -1,0 +1,55 @@
+name: Cloud Release
+
+# Cloud release pipeline. dry_run=true (default) builds everything and uploads
+# the artifact, publishing nothing. dry_run=false builds and publishes a
+# GitHub release.
+#   gh workflow run cloud-release.yml -f dry_run=true
+#   gh workflow run cloud-release.yml -f dry_run=false
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build only; publish nothing'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '9.0.x'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Build add-on
+        shell: powershell
+        run: ./build.ps1
+      - name: Read version
+        id: version
+        shell: powershell
+        run: |
+          $v = (Select-String -Path 'addon/manifest.ini' -Pattern '^version\s*=\s*(.+)$').Matches[0].Groups[1].Value.Trim()
+          "version=$v" >> $env:GITHUB_OUTPUT
+      - name: Upload artifact (dry run)
+        if: ${{ inputs.dry_run }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: addon-${{ steps.version.outputs.version }}
+          path: |
+            dist/*.nvda-addon
+      - name: Publish release
+        if: ${{ !inputs.dry_run }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          files: |
+            dist/*.nvda-addon
