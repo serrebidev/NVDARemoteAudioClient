@@ -569,7 +569,7 @@ internal static class RemSoundSelfTestCases
 			var listener = HelperOptions.Parse(["--transport", "remsound", "--role", "subscriber", "--password-env", variable]);
 			Expect(listener.Peers.Count == 0, "A bare RemSound receiver was refused.");
 			Expect(!listener.HearMyself, "Hearing yourself was on without the flag.");
-			var hearer = HelperOptions.Parse(["--transport", "remsound", "--role", "duplex", "--password-env", variable,
+			var hearer = HelperOptions.Parse(["--transport", "remsound", "--role", "subscriber", "--password-env", variable,
 				"--relay", "relay.example.com", "--hear-myself"]);
 			Expect(hearer.HearMyself, "--hear-myself was not recognised.");
 
