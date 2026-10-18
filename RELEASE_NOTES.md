@@ -1,5 +1,22 @@
 # NVDA Remote Audio Client release notes
 
+## 0.2.14
+
+### RemSound parity: tick proofs, relay status, hear myself, and multi-lane senders
+
+Four gaps between this add-on and the current RemSound apps, closed. All of it is wire-compatible both ways: older RemSound versions drop the new packet types as unknown, and nothing about existing audio changes.
+
+- **Tick proofs.** RemSound devices now prove a tick the way the apps do (packet type 11, added by RemSound in September 2026): every five seconds, each device sends the devices it has ticked a small packet sealed with the audio key — "I have ticked you, and I hold the password". This computer announces **"{device} has ticked this computer"** when one arrives. It matters most for a device that only listens, like a phone hearing this computer: it sends no audio and no Format of its own, so until now there was no way to confirm from this end that it had ticked this computer at all. A proof sealed with a different password is reported once as a password problem, and a captured proof cannot be replayed: proofs carry their own time, are refused outside a ten-minute window, and are never accepted twice. In a relay group the roster already carries the same fact, and the relay does not forward proofs.
+- **The relay's own status.** On a group call the add-on now sends the relay a server ping once a second, as the apps do, which is what makes the relay send its status back every five seconds: its version, how many people and groups it is carrying, places free, and how this computer's own packets arrived over the last minute. The status is announced when you join, the round trip to the relay is measured from the ping echoes, and everything is kept in **Copy audio diagnostics**. A relay older than server v2.16 sends no status; the diagnostics note that once instead of leaving the gap unexplained.
+- **Hear myself through the relay.** A new Tools menu check item, settings checkbox, and gesture toggles the round-trip test the RemSound apps offer: this computer's hello names itself as ticked, and the relay (server v2.15 or newer) sends its own audio and format back like another member's. An older relay ignores the extra name and nothing comes back. Switching it off drops the returning audio at once.
+- **A RemSound app sending several lanes at once now plays cleanly.** The Windows app can send two or three streams from one machine — its default device, an ASIO device, a DAW plug-in — each on its own stream. The receiver used to let a same-device stream take over on every packet, resetting the decoder state each time and interleaving both lanes into the one playback queue: time-sliced mush of the two. Now one stream plays per device and another lane (or another device, or the same device by a second address) takes over only after the playing stream has been silent for a second. The lanes cannot be mixed — there is one playback path with one clock — so the first lane is heard clean. A stream that rotates its ID for a codec change likewise waits out the old stream's silence, under a second in practice.
+
+### Testing
+
+- New helper self-test cases: tick proof layout (type 11, stream 0xFFFF, 53-byte sealed payload), round trip, replay, staleness, wrong-password and tamper rejection; server ping construction; the server status body parsed field by field with malformed bodies refused; hear-myself tick lists (own id first, deduplication, the 64-entry cap, and the switch-off pass-through); and the receiver's stream-claim decision (idle claim, same-stream claim, second-lane and second-device handover at exactly one second of silence). `--hear-myself` parsing is covered in the options cases.
+- New add-on checks: the `remSoundHearMyself` setting normalizing and defaulting off, `--hear-myself` reaching the helper only when it is on and only on the RemSound path, the ticked announcement, the relay status being kept and spoken only the first time, and hear-myself state changes being recorded without double speech. The suite is now 318 add-on checks.
+- Six new mutations in `tools/mutation_check.py` cover the new invariants.
+
 ## 0.2.12
 
 ### Updated to .NET 10 and current dependencies

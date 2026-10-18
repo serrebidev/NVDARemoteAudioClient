@@ -66,6 +66,11 @@ internal sealed class RemSoundLinkOptions
 	public bool CanSend { get; init; }
 	public bool CanReceive { get; init; }
 	public bool AllowRemoteControl { get; init; }
+	/// <summary>
+	/// Hear this computer's own audio back from the relay, to test the round
+	/// trip: our hello names our own client id as ticked (server-v2.15).
+	/// </summary>
+	public bool HearMyself { get; init; }
 	public string Role { get; init; } = "subscriber";
 }
 
@@ -96,6 +101,11 @@ internal sealed class RemSoundLink : IDisposable
 	private readonly object _healthGate = new();
 	private readonly Dictionary<IPAddress, PeerHealth> _health = [];
 	private readonly RemControlGuard _controlGuard = new();
+	private readonly RemTickProofGuard _tickProofGuard = new();
+	private readonly Guid _instanceId;
+	private readonly Dictionary<IPAddress, TimeSpan> _lastTickProofAt = [];
+	private readonly HashSet<IPAddress> _tickProofRejected = [];
+	private TimeSpan _lastTickProofSent = TimeSpan.MinValue;
 	private readonly AesGcm _controlGcm;
 	private readonly CancellationTokenSource _cts = new();
 	private readonly List<RelayGroup> _relayGroups = [];
@@ -122,6 +132,9 @@ internal sealed class RemSoundLink : IDisposable
 		Key = RemCrypto.DeriveKey(options.Password);
 		Fingerprint = RemCrypto.Fingerprint(options.Password);
 		_controlGcm = new AesGcm(Key, RemCrypto.TagBytes);
+		// Tick proofs carry the same discovery instance id the announcements
+		// use, so a peer can match a proof to the device it found.
+		_instanceId = Guid.TryParse(RemSoundIdentity.Resolve(), out var instanceId) ? instanceId : Guid.NewGuid();
 		_socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
 		{
 			SendBufferSize = 512 * 1024,
@@ -178,7 +191,10 @@ internal sealed class RemSoundLink : IDisposable
 					// just also gets hellos and group-framed audio.
 					_resolvedPeers = [.. _resolvedPeers, relay];
 				}
-				var joined = new RelayGroup(this, relay, RemSoundGroupIdentity.Resolve(), _options.RelayTicks);
+				var joined = new RelayGroup(this, relay, RemSoundGroupIdentity.Resolve(), _options.RelayTicks)
+				{
+					HearMyself = _options.HearMyself,
+				};
 				_relayGroups.Add(joined);
 				// The first hello leaves at once; the heartbeat loop repeats it.
 				SendHello(joined);
@@ -239,6 +255,10 @@ internal sealed class RemSoundLink : IDisposable
 	{
 		foreach (var group in _relayGroups)
 		{
+			if (group.HearMyself && group.EchoAddress().Equals(address))
+			{
+				return "yourself (through the relay)";
+			}
 			if (group.MemberName(address) is { } memberName)
 			{
 				return memberName;
@@ -428,6 +448,7 @@ internal sealed class RemSoundLink : IDisposable
 				RebuildTargets();
 			}
 			var nowMs = _clock.ElapsedMilliseconds;
+			var now = _clock.Elapsed;
 			var ping = RemPacket.BuildHeartbeat(RemHeartbeatKind.Ping, (uint)Interlocked.Increment(ref _heartbeatSequence), nowMs);
 			foreach (var target in _targets)
 			{
@@ -439,6 +460,20 @@ internal sealed class RemSoundLink : IDisposable
 				// a phone or an older app; it is always sent, group or not.
 				SendTo(ping, target);
 			}
+			if (now - _lastTickProofSent >= RemTickProof.SendInterval && _targets.Length > 0)
+			{
+				// A tick proof every five seconds to each device we send to:
+				// "I have ticked you, and I hold the password." A device that
+				// only listens for us sends no Format of its own, so this is
+				// the only proof it ever gets that it has been ticked back.
+				_lastTickProofSent = now;
+				var proof = RemTickProof.BuildPacket(Key, _instanceId, DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+					(uint)Interlocked.Increment(ref _heartbeatSequence));
+				foreach (var target in _targets)
+				{
+					SendTo(proof, target);
+				}
+			}
 			foreach (var group in _relayGroups)
 			{
 				// The group heartbeat rides in group framing so the relay carries
@@ -446,9 +481,26 @@ internal sealed class RemSoundLink : IDisposable
 				var groupPing = RemGroupPacket.Wrap(ping, group.ClientId);
 				SendTo(groupPing, group.Relay);
 				group.NotePingSent(nowMs);
-				if (_clock.Elapsed - group.LastHelloSent >= RemGroupPacket.HelloInterval)
+				if (now - group.LastHelloSent >= RemGroupPacket.HelloInterval)
 				{
 					SendHello(group);
+				}
+				if (group.IsActive(now))
+				{
+					// The relay sends its status only to members that ping it;
+					// the echo also times the round trip.
+					if (now - group.LastServerPingSent >= TimeSpan.FromSeconds(1))
+					{
+						group.LastServerPingSent = now;
+						SendTo(RemGroupPacket.BuildServerPing(group.ClientId, StopwatchMicros()), group.Relay);
+					}
+					if (group.FirstRosterAt is { } joinedAt && now - joinedAt > TimeSpan.FromSeconds(15) &&
+						!group.ServerInfoSeen && !group.OldServerNoted)
+					{
+						group.OldServerNoted = true;
+						JsonLog.Write("diagnostic",
+							$"The relay at {group.Relay} does not send its server status; that takes a relay running server v2.16 or newer. The group itself is unaffected.");
+					}
 				}
 			}
 			UpdateHealth();
@@ -515,6 +567,13 @@ internal sealed class RemSoundLink : IDisposable
 		}
 	}
 
+	/// <summary>
+	/// This process's microsecond clock, the one server pings carry: the relay
+	/// echoes it untouched, so only differences between two readings matter.
+	/// </summary>
+	private static long StopwatchMicros() =>
+		(long)(Stopwatch.GetTimestamp() * (1_000_000.0 / Stopwatch.Frequency));
+
 	public IReadOnlyList<Dictionary<string, object?>> HealthSnapshot()
 	{
 		var now = _clock.Elapsed;
@@ -527,6 +586,7 @@ internal sealed class RemSoundLink : IDisposable
 				["connected"] = pair.Value.Connected,
 				["rtt_ms"] = pair.Value.RttMs,
 				["last_audio_s"] = pair.Value.LastAudio is { } audio ? Math.Round((now - audio).TotalSeconds, 1) : null,
+				["ticked_us"] = _lastTickProofAt.TryGetValue(pair.Key, out var proof) && now - proof <= TimeSpan.FromSeconds(15),
 			}).ToList();
 		}
 	}
@@ -600,6 +660,12 @@ internal sealed class RemSoundLink : IDisposable
 				case RemPacketType.Roster:
 					group.OnRoster(payload, _clock.Elapsed);
 					break;
+				case RemPacketType.ServerInfo:
+					if (RemServerInfo.TryRead(payload, DateTime.UtcNow, out var serverInfo))
+					{
+						group.OnServerInfo(serverInfo);
+					}
+					break;
 				case RemPacketType.Full:
 					// Payload: current count, maximum.
 					var detail = new Dictionary<string, object?>
@@ -620,6 +686,35 @@ internal sealed class RemSoundLink : IDisposable
 			}
 			return;
 		}
+		var memberPayload = packet[RemGroupPacket.HeaderSize..];
+		if (group is not null && clientId.AsSpan().SequenceEqual(group.ClientId))
+		{
+			// Our own packet, come back from the relay. Two kinds ever do: the
+			// server ping echo (timed, then dropped) and — only while hearing
+			// ourselves, which the hello's self-tick asks for — our own Format
+			// and Audio, credited to our own member address so the receiver
+			// treats them like any member's. Their sender has trivially ticked
+			// us, so the member tick gate is not consulted. Nothing else of
+			// ours ever comes back, and anything else claiming our id is dropped.
+			switch (type)
+			{
+				case RemPacketType.ServerPing:
+					if (memberPayload.Length >= 8)
+					{
+						group.NoteServerPong(BinaryPrimitives.ReadInt64LittleEndian(memberPayload), StopwatchMicros());
+					}
+					return;
+				case RemPacketType.Format:
+				case RemPacketType.Audio:
+					if (group.HearMyself && group.IsActive(_clock.Elapsed))
+					{
+						AudioPacketReceived?.Invoke(type, streamId, sequence, memberPayload, group.EchoEndpoint(source.Port));
+					}
+					return;
+				default:
+					return;
+			}
+		}
 		// A member's packet always arrives via the relay, and group behavior is
 		// only on while its member list is fresh.
 		if (group is null || !group.IsActive(_clock.Elapsed))
@@ -627,7 +722,6 @@ internal sealed class RemSoundLink : IDisposable
 			return;
 		}
 		var member = new IPEndPoint(RemGroupPacket.MemberAddress(clientId, group.RosterIds()), source.Port);
-		var memberPayload = packet[RemGroupPacket.HeaderSize..];
 		switch (type)
 		{
 			case RemPacketType.Heartbeat:
@@ -690,7 +784,7 @@ internal sealed class RemSoundLink : IDisposable
 
 	private void SendHello(RelayGroup group)
 	{
-		SendTo(RemGroupPacket.BuildHello(group.ClientId, _options.DeviceName, Fingerprint, group.Ticks), group.Relay);
+		SendTo(RemGroupPacket.BuildHello(group.ClientId, _options.DeviceName, Fingerprint, group.EffectiveTicks()), group.Relay);
 		group.LastHelloSent = _clock.Elapsed;
 	}
 
@@ -727,6 +821,35 @@ internal sealed class RemSoundLink : IDisposable
 					SendHello(group);
 				}
 				EmitTicks(null);
+				return true;
+			case "relay-hear-myself":
+				if (LiveControls.ParseSwitch(argument, _relayGroups[0].HearMyself) is not { } hear)
+				{
+					JsonLog.Write("diagnostic", $"Ignored a hear-myself switch '{argument}': expected on, off or toggle.");
+					return true;
+				}
+				foreach (var group in _relayGroups)
+				{
+					if (group.HearMyself == hear)
+					{
+						continue;
+					}
+					group.HearMyself = hear;
+					// The new hello is what turns the echo on or off at the
+					// relay; switching off also drops the echo session at
+					// once, so the last of our own audio cannot linger.
+					SendHello(group);
+					if (!hear)
+					{
+						MemberDeparted?.Invoke(group.EchoAddress());
+					}
+				}
+				JsonLog.Write("relay_hear_myself", hear
+					? "Hearing yourself through the relay: on."
+					: "Hearing yourself through the relay: off.", new Dictionary<string, object?>
+				{
+					["state"] = hear,
+				});
 				return true;
 			default:
 				return false;
@@ -807,6 +930,9 @@ internal sealed class RemSoundLink : IDisposable
 			case RemPacketType.Control:
 				HandleControl(payload, source);
 				return;
+			case RemPacketType.TickProof:
+				HandleTickProof(payload, source);
+				return;
 			case RemPacketType.Format:
 			case RemPacketType.Audio:
 				if (!IsAllowedSource(source.Address))
@@ -818,6 +944,55 @@ internal sealed class RemSoundLink : IDisposable
 			default:
 				// KeepAlive and anything newer are dropped quietly.
 				return;
+		}
+	}
+
+	/// <summary>
+	/// A tick proof from a chosen device: it has ticked this computer, and it
+	/// holds the password — the sealed proof is the only way to know the second
+	/// half, and for a device that only listens it is the only evidence of the
+	/// first. Announced once per proof session; a proof that does not open is
+	/// reported once per device, because "the phone ticked us but nothing
+	/// plays" is almost always two different passwords.
+	/// </summary>
+	private void HandleTickProof(ReadOnlySpan<byte> payload, IPEndPoint source)
+	{
+		if (!IsAllowedSource(source.Address))
+		{
+			return;
+		}
+		if (!_tickProofGuard.TryAccept(_controlGcm, payload, DateTime.UtcNow, out _, out var reason))
+		{
+			if (reason == RemTickProofGuard.NotOurPassword)
+			{
+				bool first;
+				lock (_healthGate)
+				{
+					first = _tickProofRejected.Add(source.Address);
+				}
+				if (first)
+				{
+					JsonLog.Write("diagnostic",
+						$"A tick proof from {DescribePeer(source.Address)} did not match this password: that device is using a different encryption password.");
+				}
+			}
+			return;
+		}
+		var now = _clock.Elapsed;
+		bool fresh;
+		lock (_healthGate)
+		{
+			fresh = !_lastTickProofAt.TryGetValue(source.Address, out var previous) || now - previous > TimeSpan.FromSeconds(30);
+			_lastTickProofAt[source.Address] = now;
+		}
+		if (fresh)
+		{
+			var name = DescribePeer(source.Address);
+			JsonLog.Write("ticked", $"{name} has ticked this computer.", new Dictionary<string, object?>
+			{
+				["peer"] = name,
+				["address"] = source.Address.ToString(),
+			});
 		}
 	}
 
@@ -904,10 +1079,100 @@ internal sealed class RemSoundLink : IDisposable
 		public byte[] ClientId { get; }
 		/// <summary>Null: the legacy 40-byte hello, "everyone in my group".</summary>
 		public List<byte[]>? Ticks { get; set; }
+		/// <summary>
+		/// Hear our own audio back from the relay (server-v2.15): the hello's
+		/// tick list names our own client id, first. Set at join and live.
+		/// </summary>
+		public bool HearMyself { get; set; }
 		public List<RemRosterMember> Members { get; private set; } = [];
 		public byte ListFlags { get; private set; }
 		public TimeSpan? LastRoster { get; private set; }
 		public TimeSpan LastHelloSent { get; set; }
+		public TimeSpan? FirstRosterAt { get; private set; }
+		public TimeSpan LastServerPingSent { get; set; } = TimeSpan.MinValue;
+		public bool OldServerNoted { get; set; }
+		/// <summary>The relay's latest status for this group, once it sends one.</summary>
+		public RemServerInfo? ServerInfo { get; private set; }
+		public bool ServerInfoSeen => ServerInfo is not null;
+
+		private readonly List<double> _serverRoundTrips = [];
+
+		/// <summary>Median round trip to the relay over the last ten server ping echoes.</summary>
+		public double? ServerRoundTripMs
+		{
+			get
+			{
+				if (_serverRoundTrips.Count == 0)
+				{
+					return null;
+				}
+				var sorted = _serverRoundTrips.OrderBy(value => value).ToList();
+				var mid = sorted.Count / 2;
+				return sorted.Count % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+			}
+		}
+
+		public void NoteServerPong(long sentMicros, long nowMicros)
+		{
+			var ms = (nowMicros - sentMicros) / 1000.0;
+			if (ms < 0 || ms > 10_000)
+			{
+				return;
+			}
+			_serverRoundTrips.Add(ms);
+			if (_serverRoundTrips.Count > 10)
+			{
+				_serverRoundTrips.RemoveAt(0);
+			}
+		}
+
+		/// <summary>The tick list the next hello carries (see RemGroupPacket.EffectiveTicks).</summary>
+		public List<byte[]>? EffectiveTicks() =>
+			RemGroupPacket.EffectiveTicks(ClientId, Ticks, RosterIds(), HearMyself);
+
+		/// <summary>
+		/// The member address our own relayed audio is credited to: our client
+		/// id's address, resolved against the roster plus ourselves.
+		/// </summary>
+		public IPAddress EchoAddress() =>
+			RemGroupPacket.MemberAddress(ClientId, RosterIds().Append(ClientId));
+
+		public IPEndPoint EchoEndpoint(int port) => new(EchoAddress(), port);
+
+		/// <summary>
+		/// Keeps the relay's status, reporting it when it first arrives and
+		/// when the counts a person would act on change; the per-minute
+		/// arrival numbers ride along for the diagnostics report.
+		/// </summary>
+		public void OnServerInfo(RemServerInfo info)
+		{
+			var first = ServerInfo is null;
+			var changed = first || ServerInfo!.Version != info.Version || ServerInfo.People != info.People ||
+				ServerInfo.Groups != info.Groups || ServerInfo.PlacesFree != info.PlacesFree || ServerInfo.Phones != info.Phones;
+			ServerInfo = info;
+			if (!changed)
+			{
+				return;
+			}
+			JsonLog.Write("relay_server",
+				$"Relay {info.Version}: {info.People} people in {info.Groups} group(s), {info.PlacesFree} places free.",
+				new Dictionary<string, object?>
+				{
+					["relay"] = Relay.ToString(),
+					["first"] = first,
+					["version"] = info.Version,
+					["uptime_s"] = (long)info.Uptime.TotalSeconds,
+					["people"] = info.People,
+					["groups"] = info.Groups,
+					["places_free"] = info.PlacesFree,
+					["phones"] = info.Phones,
+					["your_packets"] = info.YourPackets,
+					["your_longest_gap_ms"] = Math.Round(info.YourLongestGapMs, 1),
+					["your_long_gaps"] = info.YourLongGaps,
+					["your_seconds"] = info.YourSeconds,
+					["rtt_ms"] = ServerRoundTripMs is { } rtt ? Math.Round(rtt) : null,
+				});
+		}
 
 		public bool IsActive(TimeSpan now) =>
 			LastRoster is { } seen && now - seen <= RemGroupPacket.RosterFreshFor;
@@ -983,6 +1248,7 @@ internal sealed class RemSoundLink : IDisposable
 			// We are in our own list; leave ourselves out.
 			members.RemoveAll(member => member.ClientId.SequenceEqual(ClientId));
 			var nowIds = members.Select(member => member.IdHex).ToHashSet();
+			var membershipChanged = !nowIds.SetEquals(Members.Select(member => member.IdHex));
 			foreach (var departed in Members)
 			{
 				if (!nowIds.Contains(departed.IdHex))
@@ -996,8 +1262,17 @@ internal sealed class RemSoundLink : IDisposable
 			Members = members;
 			ListFlags = listFlags;
 			LastRoster = now;
+			FirstRosterAt ??= now;
 			var first = !_joined;
 			_joined = true;
+			if (HearMyself && Ticks is null && membershipChanged)
+			{
+				// Hearing ourselves with no explicit tick list means the hello
+				// names the roster; a changed roster needs a fresh hello or
+				// the new member is never ticked (and the echo stops mattering
+				// the moment the list no longer matches the group).
+				_link.SendHello(this);
+			}
 			JsonLog.Write("relay_members", first
 				? $"Joined the relay group: {members.Count} member(s)."
 				: $"Relay group: {members.Count} member(s).", new Dictionary<string, object?>

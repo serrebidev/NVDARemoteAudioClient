@@ -69,6 +69,7 @@ internal static class RemSoundRunner
 			PeerNames = options.PeerNames,
 			RelayHost = options.RelayHost,
 			RelayTicks = options.RelayTicks,
+			HearMyself = options.HearMyself,
 			Password = options.Password,
 			CanSend = sends,
 			CanReceive = receives,

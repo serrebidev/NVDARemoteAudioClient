@@ -23,6 +23,7 @@ NVDA add-on side of [NVDA Remote Audio Client](../README.md). Spawns and supervi
   "remSoundDevices": [],
   "remSoundDeviceName": "",
   "allowRemoteControl": false,
+  "remSoundHearMyself": false,
   "bitrate": 128000,
   "captureProcess": "",
   "captureDevice": "",
@@ -61,6 +62,7 @@ NVDA add-on side of [NVDA Remote Audio Client](../README.md). Spawns and supervi
 - `remSoundDevices`: device names chosen from **Find RemSound devices on this network**. Stored by name and matched as they appear, so a device that changes address keeps working.
 - `remSoundDeviceName`: what other RemSound devices call this computer. Blank uses the computer name.
 - `allowRemoteControl`: when true, RemSound peers that know the password may change the volume of the audio they are sending to this computer. False by default. A peer can never change this computer's Windows volume, whatever this is set to, so the key kept its name rather than becoming one about the speaker volume.
+- `remSoundHearMyself`: when true, the relay sends this computer's own audio back like another member's, for a round-trip test (relay server v2.15 or newer). False by default. Also toggled live from **Tools > NVDA Remote Audio > Hear myself through the relay**.
 - `qualityMode`: `adaptive` | `opusLive` | `opusBroadcast` | `pcm`.
 - `recordReceived` and `recordingFolder`: timestamped 48 kHz stereo float-WAV recording.
 - `profiles` and `activeProfile`: named snapshots managed from the Tools menu. A snapshot carries every key above, so a profile remembers its connection type and RemSound devices.

@@ -8,6 +8,7 @@ internal sealed class HelperOptions
 	public IReadOnlyList<string> PeerNames { get; private init; } = [];
 	public RemPeerSpec? RelayHost { get; private init; }
 	public IReadOnlyList<byte[]>? RelayTicks { get; private init; }
+	public bool HearMyself { get; private init; }
 	public int LocalPort { get; private init; } = RemPacket.DefaultPort;
 	public int DiscoveryPort { get; private init; } = RemPacket.DiscoveryPort;
 	public string DeviceName { get; private init; } = Environment.MachineName;
@@ -71,6 +72,9 @@ internal sealed class HelperOptions
 		  --relay-ticks <ids>    Comma-separated 16-byte group client ids to hear in the
 		                        relay group. Present-but-empty hears nobody; leaving
 		                        the flag off hears the whole group
+		  --hear-myself          Hear this computer's own audio back from the relay,
+		                        to test the round trip (needs a relay running
+		                        server v2.15 or newer)
 
 		Common:
 		  --port <port>          Default: 6838
@@ -128,7 +132,7 @@ internal sealed class HelperOptions
 
 			var optionName = arg[2..];
 			if (optionName is "help" or "test-tone" or "disable-fec" or "list-audio-apps" or "list-output-devices" or "self-test"
-				or "list-input-devices" or "discover-peers" or "allow-remote-control")
+				or "list-input-devices" or "discover-peers" or "allow-remote-control" or "hear-myself")
 			{
 				flags.Add(optionName);
 				continue;
@@ -315,6 +319,7 @@ internal sealed class HelperOptions
 				PeerNames = peerNames,
 				RelayHost = relayHost,
 				RelayTicks = relayTicks,
+				HearMyself = flags.Contains("hear-myself"),
 				LocalPort = ParseInt(values, "local-port", RemPacket.DefaultPort, 1, 65535),
 				DiscoveryPort = ParseInt(values, "discovery-port", RemPacket.DiscoveryPort, 0, 65535),
 				DeviceName = ParseDeviceName(values),

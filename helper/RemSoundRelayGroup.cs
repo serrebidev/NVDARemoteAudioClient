@@ -183,6 +183,48 @@ internal static class RemGroupPacket
 	}
 
 	/// <summary>The goodbye a member sends the relay when it leaves: no payload.</summary>
+	/// <summary>
+	/// A server ping (type 15): group framing carrying up to 32 bytes of the
+	/// sender's own choosing, which the relay sends straight back unchanged,
+	/// at most four a second. Windows puts its microsecond clock in it and
+	/// times the round trip; a member that pings is also a member the relay
+	/// sends its server status to (see <see cref="RemServerInfo"/>).
+	/// </summary>
+	public static byte[] BuildServerPing(ReadOnlySpan<byte> clientId, long micros)
+	{
+		var packet = new byte[HeaderSize + 8];
+		WriteHeader(packet, RemPacketType.ServerPing, 1, 0, clientId);
+		BinaryPrimitives.WriteInt64LittleEndian(packet.AsSpan(HeaderSize), micros);
+		return packet;
+	}
+
+	/// <summary>
+	/// The tick list a hello actually carries. With hear-myself off it is the
+	/// member's own list, untouched: null stays null ("everyone in my group").
+	/// With it on, this member's own client id goes first — the relay sends a
+	/// member its own Audio and Format back when its hello names itself
+	/// (server-v2.15) — followed by the explicit list, or, when there is none,
+	/// the current roster, so "hear the whole group" keeps meaning the whole
+	/// group plus yourself. Duplicates drop, and the relay's 64-entry cap can
+	/// never push the member's own id out, because it is first.
+	/// </summary>
+	public static List<byte[]>? EffectiveTicks(ReadOnlySpan<byte> clientId, IReadOnlyList<byte[]>? ticks, IEnumerable<byte[]> memberIds, bool hearMyself)
+	{
+		if (!hearMyself)
+		{
+			return ticks?.ToList();
+		}
+		var list = new List<byte[]> { clientId.ToArray() };
+		foreach (var id in ticks ?? memberIds)
+		{
+			if (!list.Any(existing => existing.AsSpan().SequenceEqual(id)))
+			{
+				list.Add(id.ToArray());
+			}
+		}
+		return list.Count <= MaxTicked ? list : list.Take(MaxTicked).ToList();
+	}
+
 	public static byte[] BuildBye(ReadOnlySpan<byte> clientId)
 	{
 		var packet = new byte[HeaderSize];
@@ -315,5 +357,69 @@ internal static class RemSoundGroupIdentity
 		}
 		while (id.All(b => b == 0));
 		return id;
+	}
+}
+
+/// <summary>
+/// The relay's own status for the group it is carrying (packet type 14,
+/// RELAY-GROUPS.md §10; read here the way RelayGroupClient.ReadServerInfo
+/// reads it in RemSound). The relay sends it every five seconds, and only to
+/// members that have sent it a server ping: an app that never pings never sees
+/// it. It is one of the two things a member learns about the relay itself —
+/// the other is its roster — and the only way to tell a current relay from
+/// one too old to say anything (server-v2.16 added it).
+///
+/// The body after the 28-byte group header: a layout byte (1), a version
+/// length, the version in ASCII ("server-v2.17"), then little-endian fields —
+/// uptime seconds, people on the relay, groups, places free, phones and older
+/// apps in ordinary pairs, and this member's own arrival numbers over the
+/// last minute: packets, the longest gap between two of them in MICROseconds
+/// (RemSound divides by 1000 and shows milliseconds), gaps over 20 ms, and
+/// seconds with sound. A reader that meets a longer body reads the fields it
+/// knows and stops.
+/// </summary>
+internal sealed record RemServerInfo(
+	string Version,
+	TimeSpan Uptime,
+	int People,
+	int Groups,
+	int PlacesFree,
+	int Phones,
+	int YourPackets,
+	double YourLongestGapMs,
+	int YourLongGaps,
+	int YourSeconds,
+	DateTime ReceivedUtc)
+{
+	/// <summary>Bytes after the version string: 4 + 2+2+2+2 + 4 + 4 + 2 + 2.</summary>
+	public const int FixedBytes = 24;
+
+	public static bool TryRead(ReadOnlySpan<byte> payload, DateTime receivedUtc, out RemServerInfo info)
+	{
+		info = null!;
+		if (payload.Length < 2 || payload[0] != 1)
+		{
+			return false;
+		}
+		var versionBytes = payload[1];
+		if (payload.Length < 2 + versionBytes + FixedBytes)
+		{
+			return false;
+		}
+		var version = Encoding.ASCII.GetString(payload.Slice(2, versionBytes));
+		var at = payload[(2 + versionBytes)..];
+		info = new RemServerInfo(
+			version,
+			TimeSpan.FromSeconds(BinaryPrimitives.ReadUInt32LittleEndian(at)),
+			BinaryPrimitives.ReadUInt16LittleEndian(at[4..]),
+			BinaryPrimitives.ReadUInt16LittleEndian(at[6..]),
+			BinaryPrimitives.ReadUInt16LittleEndian(at[8..]),
+			BinaryPrimitives.ReadUInt16LittleEndian(at[10..]),
+			(int)BinaryPrimitives.ReadUInt32LittleEndian(at[12..]),
+			BinaryPrimitives.ReadUInt32LittleEndian(at[16..]) / 1000.0,
+			BinaryPrimitives.ReadUInt16LittleEndian(at[20..]),
+			BinaryPrimitives.ReadUInt16LittleEndian(at[22..]),
+			receivedUtc);
+		return true;
 	}
 }

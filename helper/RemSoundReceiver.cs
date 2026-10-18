@@ -8,9 +8,16 @@ namespace NVDARemoteAudioHelper;
 /// <summary>
 /// Plays audio from RemSound peers: the Windows app, its service, or an iPhone or Mac
 /// sending its microphone. Streams are keyed by source and stream ID, as RemSound
-/// keys them. One stream plays at a time; another device takes over once the playing
-/// one has been silent for a second, and a device that restarts its stream (a codec
-/// change rotates the stream ID) takes over at once.
+/// keys them. One stream plays at a time; another stream takes over only once the
+/// playing one has been silent for a second. That includes a second stream from
+/// the SAME device: RemSound's Windows app can send two or three lanes at once
+/// (its default device, an ASIO device, a DAW plug-in), each on its own stream
+/// ID, and there is one playback path here with one decoder and one clock, so
+/// the lanes cannot be mixed — the first lane plays clean and the others wait,
+/// instead of every packet from either resetting the decoder state and the two
+/// lanes interleaving into the one queue as mush. A device that rotates its
+/// stream ID (a codec change) likewise waits out the old stream's silence,
+/// under a second in practice, rather than cutting in mid-frame.
 ///
 /// Every Format packet carries the sender's password fingerprint, so a password that
 /// differs, or a sender too old to encrypt, is reported by name instead of being
@@ -138,15 +145,31 @@ internal sealed class RemSoundReceiver : IDisposable
 			});
 	}
 
+	/// <summary>
+	/// The claim decision, kept pure so the self-tests can pin it: the playing
+	/// stream keeps the output, a stream may claim when nothing is playing,
+	/// and any other stream — another device, another lane of the same
+	/// device, the same device by a second address — waits until the playing
+	/// stream has been silent for the handover window.
+	/// </summary>
+	internal static bool ShouldClaim(
+		(IPEndPoint Source, ushort StreamId)? active,
+		(IPEndPoint Source, ushort StreamId) candidate,
+		TimeSpan playingSilence) =>
+		active is null || active.Value == candidate || playingSilence >= HandoverSilence;
+
 	private bool ClaimPlayback((IPEndPoint Source, ushort StreamId) key, Session session, TimeSpan now)
 	{
 		if (_active == key)
 		{
 			return true;
 		}
-		if (_active is { } current && _sessions.TryGetValue(current, out var playing) &&
-			now - playing.LastPacket < HandoverSilence &&
-			!current.Source.Address.Equals(key.Source.Address))
+		var silence = TimeSpan.MaxValue;
+		if (_active is { } current && _sessions.TryGetValue(current, out var playing))
+		{
+			silence = now - playing.LastPacket;
+		}
+		if (!ShouldClaim(_active, key, silence))
 		{
 			return false;
 		}

@@ -300,6 +300,9 @@ def testConfigNormalization(mod):
 	# RemSound is the connection this add-on leads with now, so a config that does
 	# not say otherwise gets it.
 	check("a new config defaults to RemSound", defaults["transport"], "remsound")
+	check("hearing yourself defaults off", defaults["remSoundHearMyself"], False)
+	check("hearing yourself reads a string bool",
+		mod._normalizeConfig({"remSoundHearMyself": "yes"})["remSoundHearMyself"], True)
 	check("the default connection type is offered in settings", mod.TRANSPORTS[0], "remsound")
 	check("an unknown connection type falls back to the default", mod._normalizeConfig({"transport": "carrier-pigeon"})["transport"], "remsound")
 
@@ -633,6 +636,44 @@ def testHelperEventHandling(mod):
 	check("one join and one leave are announced", len(spoken), 2)
 	check_true("the join names the device", "Studio" in spoken[0])
 	check_true("the leave names the device", "Pixel" in spoken[1])
+
+	# A tick proof means a chosen device ticked this computer and holds the
+	# password: announced once, with the device named.
+	del spoken[:]
+	client._handleLine(json.dumps({"event": "ticked", "message": "iPhone has ticked this computer.", "peer": "iPhone"}))
+	check("being ticked is announced", len(spoken), 1)
+	check_true("the tick announcement names the device", "iPhone" in spoken[0])
+
+	# The relay's own status is kept for the diagnostics report; only the
+	# first one is spoken, or a busy relay would chatter every five seconds.
+	del spoken[:]
+	client._handleLine(json.dumps({
+		"event": "relay_server", "first": True,
+		"message": "Relay server-v2.17: 4 people in 2 group(s), 60 places free.",
+		"version": "server-v2.17", "uptime_s": 3661, "people": 4, "groups": 2, "places_free": 60,
+		"phones": 1, "your_packets": 120, "your_longest_gap_ms": 12.3, "your_long_gaps": 3,
+		"your_seconds": 58, "rtt_ms": 41,
+	}))
+	check("the first relay status is announced", len(spoken), 1)
+	check("the relay version is kept", client.relayServerInfo.get("version"), "server-v2.17")
+	check("the relay round trip is kept", client.relayServerInfo.get("rtt_ms"), 41)
+	del spoken[:]
+	client._handleLine(json.dumps({
+		"event": "relay_server", "first": False,
+		"message": "Relay server-v2.17: 5 people in 2 group(s), 59 places free.",
+		"version": "server-v2.17", "people": 5,
+	}))
+	check("a later relay status is not spoken", spoken, [])
+	check("the later relay status is still kept", client.relayServerInfo.get("people"), 5)
+
+	# Hear-myself changes are recorded, not spoken: the menu already spoke.
+	del spoken[:]
+	client._handleLine(json.dumps({
+		"event": "relay_hear_myself", "state": True,
+		"message": "Hearing yourself through the relay: on.",
+	}))
+	check("hear-myself changes are not spoken twice", spoken, [])
+	check("the hear-myself state is kept", client.hearMyself, True)
 
 	# Diagnostics arrive every five seconds; speaking them would be unusable, but
 	# they must still be captured for the diagnostics report.
@@ -1034,6 +1075,7 @@ def testRemSoundHelperArguments(mod):
 	bare = mod._normalizeConfig({"transport": "remsound", "password": "plexbox"})
 	args, env = mod._helperArguments("subscriber", bare)
 	check_true("a bare receiver passes no peers", "--peers" not in args)
+	check_true("a bare receiver does not hear itself", "--hear-myself" not in args)
 	check("a bare receiver still carries the password",
 		env.get("NVDA_REMOTE_AUDIO_PASSWORD"), "plexbox")
 	check_true("remote control is off unless asked for", "--allow-remote-control" not in args)
@@ -1057,6 +1099,13 @@ def testRemSoundHelperArguments(mod):
 	args, env = mod._helperArguments("subscriber", nobody)
 	check_true("an empty tick list still passes the flag", "--relay-ticks" in args)
 	check("an empty tick list passes no ids", args[args.index("--relay-ticks") + 1], "")
+	# Hearing yourself is a switch of its own, passed only when it is on.
+	hearing = mod._normalizeConfig({
+		"transport": "remsound", "password": "plexbox",
+		"remSoundRelay": "relay.example.com", "remSoundHearMyself": True,
+	})
+	args, env = mod._helperArguments("duplex", hearing)
+	check_true("hearing yourself passes its flag", "--hear-myself" in args)
 	# No ticks chosen is the legacy hello: the flag stays away entirely.
 	everyone = mod._normalizeConfig({
 		"transport": "remsound", "password": "plexbox", "remSoundRelay": "relay.example.com",
@@ -1081,6 +1130,7 @@ def testRemSoundHelperArguments(mod):
 	check_true("the relay path names no transport", "--transport" not in args)
 	check_true("the relay path has no RemSound peers", "--peers" not in args)
 	check_true("the relay path allows no remote control", "--allow-remote-control" not in args)
+	check_true("the relay path has no hear-myself switch", "--hear-myself" not in args)
 
 
 def testLiveVolumeAndRemoteControl(mod):

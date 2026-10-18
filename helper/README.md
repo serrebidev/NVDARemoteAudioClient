@@ -100,6 +100,11 @@ Packet size and subscriber-side jitter buffering are tunable from CLI (the add-o
 --local-port <port>       RemSound audio/heartbeat/control port. Default 47830.
 --discovery-port <port>   RemSound discovery port, 0 to turn discovery off. Default 47821.
 --allow-remote-control    Let peers that share the password change this computer's volume.
+--relay <host[:port]>     Join a RemSound V2 relay as a group member.
+--relay-ticks <ids>       Comma-separated group client ids to hear. Present-but-empty
+                          hears nobody; leaving the flag off hears the whole group.
+--hear-myself             Hear this computer's own audio back from the relay
+                          (server v2.15 or newer).
 --discover-peers          Listen for RemSound devices and list them as JSON, then exit.
 --discover-seconds <n>    How long --discover-peers listens. Default 4.
 ```
@@ -124,7 +129,9 @@ Packet size and subscriber-side jitter buffering are tunable from CLI (the add-o
 | `RemSoundProtocol.cs` | The RemSound v3 wire format: header, Format packets, heartbeat, 24-bit PCM framing, PBKDF2 key and fingerprint, nonce layout, and sealed remote control. |
 | `RemSoundDiscovery.cs` | RemSound's JSON LAN discovery announcements. |
 | `RemSoundIdentity.cs` | The one device identity this computer announces, kept per installation so other devices can identify it across restarts. |
-| `RemSoundLink.cs` | One UDP socket for audio, heartbeats, relay address checks, and remote control, with peer health tracking. |
+| `RemSoundLink.cs` | One UDP socket for audio, heartbeats, relay address checks, remote control, and tick proofs, with peer health tracking. |
+| `RemSoundRelayGroup.cs` | V2 relay group framing, hello/roster/bye, the relay's server status, and the hear-myself tick list. |
+| `RemSoundTickProof.cs` | Tick proofs (packet type 11): seal, unseal, staleness and replay guard. |
 | `RemSoundSender.cs` | Opus or 24-bit PCM send, encrypted per packet, with the format re-announced every 250 ms. |
 | `RemSoundReceiver.cs` | Per-source session tracking, Opus decode with FEC and PLC, PCM reassembly, password-fingerprint diagnosis. |
 | `RemSoundRunner.cs` | Chooses what a sending RemSound helper captures, and runs link, sender, receiver, and live controls together. |
@@ -231,7 +238,13 @@ Every packet starts with a 12-byte little-endian header, on UDP port **47830**:
   └ type=3 KeepAlive / type=4 Heartbeat : kind (1) + originator tick (8)
   └ type=5 Control   : sealed remote control (see below)
   └ type=10 AddrCheck: the relay's address check
+  └ type=11 TickProof: sealed "I have ticked you, and I hold the password"
 ```
+
+Group framing is the same header with version 2 and the sender's 16-byte client
+id appended (`RemSoundRelayGroup.cs`). In group framing the relay also speaks:
+roster (7), full (8), bye (9), its own status (14, see below), and it echoes a
+member's server ping (15) straight back.
 
 Stream ID 0 is coerced to 1, as every other port does, and a session is keyed on
 its source address together with this ID. A sender re-announces its Format packet
@@ -288,6 +301,26 @@ unconditionally in `RemControlPolicy`, switched on or not, and the helper holds 
 code that sets an endpoint volume — so a speaker volume that moves on its own can
 never have come from a RemSound peer. Sending those commands outward is still
 offered, because that is the user acting deliberately on the other device.
+
+Tick proofs (`RemSoundTickProof.cs`) are sealed with the same key and the same
+discipline: a 25-byte plaintext (format version, the sender's UTC time, its
+discovery instance id) under nonce ‖ tag ‖ ciphertext, sent every five seconds to
+each chosen device. The receiver refuses anything outside a ten-minute window and
+any seal it has accepted before, so a captured proof proves nothing twice. They
+are peer-to-peer only — the relay does not forward type 11 — and older peers drop
+the unknown type, so nothing about audio depends on them. In a group, the
+roster's per-member flag already carries the same fact.
+
+The relay's status (`RemServerInfo` in `RemSoundRelayGroup.cs`) is sent every
+five seconds, and only to members that send it a server ping: the link pings once
+a second while a group is active, times the echo (median of the last ten), and
+reports the status — version, people, groups, places free, and this member's own
+arrival numbers — as a `relay_server` event when it first arrives and when the
+counts change. Hearing yourself is the relay's own rule, not a packet of ours:
+the hello's tick list names our own client id first (`EffectiveTicks`), and the
+relay returns our Audio and Format unchanged, credited here to our own member
+address. Types 12 and 13 (peer and server metronome) are not implemented: a
+synchronised click track is a subsystem of its own, and unknown types are dropped.
 
 ## License
 

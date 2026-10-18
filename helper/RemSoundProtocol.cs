@@ -29,6 +29,15 @@ internal enum RemPacketType : byte
 	Full = 8,
 	Bye = 9,
 	AddrCheck = 10,
+	/// <summary>"I have ticked you, and I hold the password", sealed (see <see cref="RemTickProof"/>).</summary>
+	TickProof = 11,
+	// 12 is Metronome and 13 is Timing (the relay's metronome): synchronised
+	// click tracks for playing music together. Not implemented here; unknown
+	// types are dropped, as RemSound drops the ones it does not know.
+	/// <summary>The relay's own status for group members (see <see cref="RemServerInfo"/>).</summary>
+	ServerInfo = 14,
+	/// <summary>A member's payload the relay sends straight back, to time the round trip.</summary>
+	ServerPing = 15,
 }
 
 internal enum RemHeartbeatKind : byte

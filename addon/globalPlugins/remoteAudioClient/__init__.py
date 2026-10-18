@@ -57,6 +57,7 @@ DEFAULT_CONFIG = {
 	"remSoundDevices": [],
 	"remSoundDeviceName": "",
 	"allowRemoteControl": False,
+	"remSoundHearMyself": False,
 	"captureDevice": "",
 	"profiles": {},
 	"activeProfile": "",
@@ -219,6 +220,7 @@ def _normalizeConfig(config):
 			c for c in str(config.get("remSoundDeviceName") or "") if c.isprintable()
 		).strip()[:64],
 		"allowRemoteControl": asBool(config.get("allowRemoteControl"), DEFAULT_CONFIG["allowRemoteControl"]),
+		"remSoundHearMyself": asBool(config.get("remSoundHearMyself"), DEFAULT_CONFIG["remSoundHearMyself"]),
 		"captureDevice": "".join(c for c in str(config.get("captureDevice") or "") if c.isprintable()).strip()[:512],
 	}
 	profiles = {}
@@ -403,6 +405,8 @@ def _helperArguments(role, config, helperPath=None, nvdaPid=None):
 			args.extend(["--device-name", deviceName])
 		if config.get("allowRemoteControl"):
 			args.append("--allow-remote-control")
+		if config.get("remSoundHearMyself"):
+			args.append("--hear-myself")
 	else:
 		args.extend([
 			"--host", config["host"],
@@ -792,6 +796,12 @@ class AudioClientProcess:
 		#: The latest V2 relay group roster, each a dict with id, name,
 		#: ticked_by_them and ticked_by_me. Empty until the relay answers.
 		self.relayMembers = []
+		#: The latest status the relay reported about itself (version, counts,
+		#: this computer's arrival numbers, round trip). Empty until it does.
+		self.relayServerInfo = {}
+		#: Whether the running helper is currently hearing this computer's own
+		#: audio back from the relay. Seeded from the settings at start.
+		self.hearMyself = False
 
 	def isRunning(self):
 		return self._process is not None and self._process.poll() is None
@@ -804,6 +814,7 @@ class AudioClientProcess:
 
 	def start(self, role, config):
 		self.stop()
+		self.hearMyself = bool(config.get("remSoundHearMyself", DEFAULT_CONFIG["remSoundHearMyself"]))
 		self._announceStatus = bool(config.get("announceStatus", DEFAULT_CONFIG["announceStatus"]))
 		self._verboseLogging = bool(config.get("verboseLogging", DEFAULT_CONFIG["verboseLogging"]))
 		if not os.path.exists(HELPER_PATH):
@@ -818,6 +829,7 @@ class AudioClientProcess:
 		self._transport = config.get("transport", DEFAULT_CONFIG["transport"])
 		self.discoveredPeers = []
 		self.relayMembers = []
+		self.relayServerInfo = {}
 		self._lastMessage = _("Connecting")
 		self._startedAt = time.time()
 		self._stopping = False
@@ -951,6 +963,8 @@ class AudioClientProcess:
 			"lastDiagnostics": dict(self._lastDiagnostics),
 			"transport": self._transport,
 			"discoveredPeers": list(self.discoveredPeers),
+			"relayServer": dict(self.relayServerInfo),
+			"hearMyself": self.hearMyself,
 		}
 
 	def _readOutput(self):
@@ -1026,6 +1040,23 @@ class AudioClientProcess:
 			members = event.get("members")
 			if isinstance(members, list):
 				self._handleRelayMembers(event, [member for member in members if isinstance(member, dict)])
+		elif eventName == "ticked":
+			# A chosen device proved it has ticked this computer and holds the
+			# password. Setup-critical, but routine once it repeats, so it
+			# follows the status preference like other connection news.
+			self._queueStatus(_(message))
+		elif eventName == "relay_server":
+			self.relayServerInfo = {
+				key: event.get(key)
+				for key in ("version", "uptime_s", "people", "groups", "places_free", "phones",
+					"your_packets", "your_longest_gap_ms", "your_long_gaps", "your_seconds", "rtt_ms")
+			}
+			if event.get("first"):
+				self._queueStatus(_(message))
+		elif eventName == "relay_hear_myself":
+			# The menu command that asked for the change already spoke; this
+			# only keeps the recorded state true for the menu and diagnostics.
+			self.hearMyself = bool(event.get("state"))
 		elif eventName == "error":
 			wx.CallAfter(ui.message, _("Remote audio error: {message}").format(message=message))
 			log.error("Remote audio helper error: %s", line)
@@ -1203,6 +1234,13 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 			label=_("Let RemSound devices that share the password change the volume of the audio they send here"),
 		))
 		self.allowRemoteControlCheck.SetValue(bool(self._config["allowRemoteControl"]))
+		self.hearMyselfCheck = helper.addItem(wx.CheckBox(
+			self,
+			# Translators: on a RemSound relay group call, this computer's own
+			# audio is sent back by the relay so the user can hear the round trip.
+			label=_("Hear myself through the RemSound relay (test hearing my own audio come back)"),
+		))
+		self.hearMyselfCheck.SetValue(bool(self._config["remSoundHearMyself"]))
 
 		self.bitrateCtrl = helper.addLabeledControl(
 			_("Send bitrate:"),
@@ -1376,6 +1414,7 @@ class RemoteAudioSettingsPanel(gui.settingsDialogs.SettingsPanel):
 			"remSoundDevices": self.remSoundDevicesCtrl.GetValue(),
 			"remSoundDeviceName": self.remSoundNameCtrl.GetValue(),
 			"allowRemoteControl": self.allowRemoteControlCheck.GetValue(),
+			"remSoundHearMyself": self.hearMyselfCheck.GetValue(),
 			"outputDeviceId": self._outputDeviceValues[self.outputDeviceChoice.GetSelection()],
 			"receiveVolume": self.receiveVolumeCtrl.GetValue(),
 			"receivePan": self.receivePanCtrl.GetValue(),
@@ -1413,6 +1452,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._duplexItem = None
 		self._discovering = False
 		self._recordItem = None
+		self._hearMyselfItem = None
 		self._autoRole = None
 		self._autoStartCall = None
 		self._autoRetryCall = None
@@ -1514,6 +1554,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			addressItem = self._menu.Append(wx.ID_ANY, _("This computer's address for the other computer"))
 			findDevicesItem = self._menu.Append(wx.ID_ANY, _("Find RemSound devices on this network..."))
 			relayMembersItem = self._menu.Append(wx.ID_ANY, _("Choose RemSound relay members..."))
+			self._hearMyselfItem = self._menu.AppendCheckItem(wx.ID_ANY, _("Hear myself through the relay"))
 			diagnosticsItem = self._menu.Append(wx.ID_ANY, _("Copy audio diagnostics"))
 			selfTestItem = self._menu.Append(wx.ID_ANY, _("Run helper self-test"))
 			self._menu.AppendSeparator()
@@ -1533,6 +1574,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onDuplex, self._duplexItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onFindDevices, findDevicesItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onRelayMembers, relayMembersItem)
+			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onHearMyself, self._hearMyselfItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onReconnect, reconnectItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onStop, stopItem)
 			gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onToggleRecording, self._recordItem)
@@ -1566,6 +1608,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 				self._duplexItem.Check(role == "duplex")
 			if self._recordItem is not None:
 				self._recordItem.Check(bool(_loadConfig().get("recordReceived")))
+			if self._hearMyselfItem is not None:
+				self._hearMyselfItem.Check(bool(_loadConfig().get("remSoundHearMyself")))
 		except Exception:
 			log.debug("Failed to update remote audio menu checks", exc_info=True)
 
@@ -1580,6 +1624,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._sendItem = None
 		self._duplexItem = None
 		self._recordItem = None
+		self._hearMyselfItem = None
 		try:
 			# Reload Add-ons can be invoked from this same Tools menu. Removing
 			# or destroying a submenu synchronously while wx is dispatching that
@@ -1778,6 +1823,38 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		else:
 			# Translators: the helper is not running, so the choice only applies at the next connect.
 			ui.message(_("{message}; it applies the next time audio connects").format(message=message))
+
+	def onHearMyself(self, event):
+		"""Toggle hearing this computer's own audio back from the relay.
+
+		The relay sends a member its own audio only when its hello names
+		itself as ticked (server v2.15 and newer), which is exactly the
+		round-trip test the RemSound apps offer. The choice is remembered,
+		and the running helper is told at once; with no relay configured
+		there is nothing to hear back from, so say so instead of toggling.
+		"""
+		config = _loadConfig()
+		if not config.get("remSoundRelay"):
+			gui.messageBox(
+				_("Enter a RemSound relay address in NVDA Remote Audio settings first, then connect."),
+				_("Hear myself"), wx.OK | wx.ICON_INFORMATION)
+			self._updateMenuChecks()
+			return
+		enabled = not bool(config.get("remSoundHearMyself"))
+		config["remSoundHearMyself"] = enabled
+		self._config = _saveConfig(config)
+		sent = self._client.sendCommand("relay-hear-myself " + ("on" if enabled else "off"))
+		if enabled:
+			# Translators: this computer's own audio now comes back from the relay, like another member's.
+			message = _("Hearing yourself through the relay: your own audio comes back like another member's")
+		else:
+			message = _("Hear myself through the relay is off")
+		if sent:
+			ui.message(message)
+		else:
+			# Translators: the helper is not running, so the choice only applies at the next connect.
+			ui.message(_("{message}; it applies the next time audio connects").format(message=message))
+		self._updateMenuChecks()
 
 	def _onSendInstallDone(self, success):
 		if not success:
@@ -1999,6 +2076,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			"RemSound devices by name: {0}".format(", ".join(config.get("remSoundDevices") or []) or "none"),
 			"RemSound name for this computer: {0}".format(config.get("remSoundDeviceName") or socket.gethostname()),
 			"Accept remote volume commands: {0}".format(config.get("allowRemoteControl")),
+			"RemSound relay: {0}".format(config.get("remSoundRelay") or "none"),
+			"Hear myself through the relay: {0}".format(config.get("remSoundHearMyself")),
 			"This computer's Tailscale address: {0}".format(_detectTailscaleAddress() or "none"),
 			"This computer's local network address: {0}".format(_detectLanAddress() or "none"),
 			"This computer's name: {0}".format(socket.gethostname()),
@@ -2035,6 +2114,14 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			for peer in discovered:
 				lines.append("  {0} at {1}:{2} (sends: {3}, receives: {4})".format(
 					peer.get("Name"), peer.get("Address"), peer.get("AudioPort"), peer.get("CanSend"), peer.get("CanReceive")))
+		relayServer = client.get("relayServer") or {}
+		if relayServer.get("version"):
+			lines.append("Relay server: {0} ({1} people in {2} group(s), {3} places free, {4} paired phones or older apps)".format(
+				relayServer.get("version"), relayServer.get("people"), relayServer.get("groups"),
+				relayServer.get("places_free"), relayServer.get("phones")))
+			lines.append("Relay round trip: {0} ms; your packets in the last minute: {1}; longest gap between them: {2} ms; gaps over 20 ms: {3}; seconds with sound: {4}".format(
+				relayServer.get("rtt_ms"), relayServer.get("your_packets"), relayServer.get("your_longest_gap_ms"),
+				relayServer.get("your_long_gaps"), relayServer.get("your_seconds")))
 		lastDiagnostics = client.get("lastDiagnostics") or {}
 		if lastDiagnostics:
 			lines.append("Last helper diagnostics:")
@@ -2112,6 +2199,10 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	@script(description=_("Find RemSound devices on this network"))
 	def script_findRemSoundDevices(self, gesture):
 		self.onFindDevices(None)
+
+	@script(description=_("Hear myself through the RemSound relay (round-trip test)"))
+	def script_hearMyselfThroughRelay(self, gesture):
+		self.onHearMyself(None)
 
 	@script(description=_("Raise the volume of received remote audio"))
 	def script_receiveVolumeUp(self, gesture):

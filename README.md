@@ -18,6 +18,9 @@ A screen-reader-first NVDA add-on for sending live Windows audio between two com
 - Lets the receiver choose a playback device, adjust volume and pan, and shape bass, midrange, and treble.
 - Changes received volume, mute, and the other device's volume from a gesture, without reconnecting.
 - Finds RemSound devices on the network and remembers them by name, even when their address changes.
+- Announces when a chosen RemSound device has ticked this computer, proved with the shared password, so a one-way setup can be confirmed from either end.
+- On a group call, reports the relay's own status: its version, how many people and groups it is carrying, and how this computer's audio is arriving.
+- Can send this computer's own audio back from the relay (**Hear myself through the relay**), the round-trip test the RemSound apps offer.
 - Records received audio to timestamped WAV files.
 - Saves complete connection setups as named profiles.
 - Reconnects after sleep, resume, server restarts, and unexpected disconnects.
@@ -70,6 +73,9 @@ A RemSound relay running server v2.9 or newer can carry a group of up to 64 devi
 3. Connect with **Send and receive at the same time (RemSound)**. This computer announces itself to the relay every two seconds with a persistent group identity, so the other devices keep recognizing it after a restart.
 4. Open **NVDA menu > Tools > NVDA Remote Audio > Choose RemSound relay members...** and tick the members to hear and be heard by. Ticking works both ways: the relay only forwards audio between members that ticked each other, so the other side has to tick this computer too. A member marked "has ticked you" already has.
 5. **Hear everyone** in that dialog returns to hearing the whole group.
+6. To check the whole path, tick **Hear myself through the relay** in the Tools menu (or in the settings): the relay sends this computer's own audio back like another member's, so you hear exactly what the group hears, echo and all. It takes a relay running server v2.15 or newer; an older relay simply never sends anything back.
+
+While you are in a group, the add-on also asks the relay about itself once a second, the way the RemSound apps do. The relay answers with its status — version, people, groups, places free, and how your own packets arrived over the last minute — which is announced when you join and kept in **Copy audio diagnostics**. A relay older than server v2.16 sends no status, and the diagnostics say so rather than leaving the gap silent.
 
 Changing the encryption password starts a new group on the relay: the old member selections are dropped, here and there, and the next announcement hears everyone again.
 
@@ -85,6 +91,8 @@ Changing the encryption password starts a new group on the relay: the old member
 - **PCM** sends uncompressed 48 kHz stereo audio and is intended for a clean LAN.
 
 On a RemSound connection the same choices are used, with RemSound's own wire encoding: Opus at 48 kHz stereo, or 24-bit PCM in 2.5 ms frames. The sender re-announces the format every quarter of a second, so a device that joins late, or misses one announcement, picks the stream up without reconnecting.
+
+One stream plays at a time. The RemSound app on Windows can send several lanes at once — its default device, an ASIO device, a DAW plug-in — each on its own stream; this add-on plays the first lane cleanly and holds the others until it has been silent for a second, rather than interleaving two lanes into one playback queue.
 
 The receiver can follow the Windows default playback device or stay pinned to another active output. Following the default now means following it for the whole session: unplugging headphones, a Bluetooth link dropping, or changing the Windows output moves playback to the endpoint that is actually current instead of leaving it on the old one. Volume ranges from 0 to 200 percent, pan ranges from full left to full right, and each EQ band ranges from -12 to +12 dB.
 
@@ -111,6 +119,8 @@ On a RemSound connection the password is not optional: RemSound has no unencrypt
 The one exception is the relay path, where leaving the password empty enables unencrypted compatibility with older add-on versions. Use that only on a trusted LAN or inside a VPN such as Tailscale. Both computers need version 0.2.0 or newer for encrypted audio and PCM.
 
 A RemSound device can change the volume of the audio it is sending to this computer only if **Let RemSound devices that share the password change the volume of the audio they send here** is ticked. Those commands are sealed with the audio key, ignored when they are more than ten minutes old, and ignored when replayed, so nobody without the password can forge one.
+
+Tick proofs are sealed the same way. Every few seconds each RemSound device sends the devices it has ticked a small sealed packet saying "I have ticked you, and I hold the password". That is how this computer can announce that a phone has ticked it even when the phone only listens and sends no audio: the proof is the only password evidence a listener ever puts on the wire. A proof sealed with a different password is reported as a password problem, and a captured proof cannot be replayed.
 
 **No RemSound device can change this computer's Windows volume.** That is true whether or not the setting above is ticked: the helper contains no code that sets an endpoint volume, so a speaker volume that moves on its own can never come from a peer. This computer can still change the other device's volume, from its own gestures, because that is you acting deliberately on the device in front of you.
 

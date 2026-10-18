@@ -24,6 +24,9 @@ internal static class RemSoundSelfTestCases
 		TestDiscoveryParsing();
 		TestDeviceIdentity();
 		TestRelayGroups();
+		TestTickProofs();
+		TestServerInfo();
+		TestStreamClaims();
 		TestPeerSpecs();
 		TestOptions();
 		TestLiveControls();
@@ -412,6 +415,129 @@ internal static class RemSoundSelfTestCases
 		}
 	}
 
+	private static void TestTickProofs()
+	{
+		var key = RemCrypto.DeriveKey("test123");
+		using var gcm = new AesGcm(key, RemCrypto.TagBytes);
+		var instance = Guid.NewGuid();
+		var now = DateTime.UtcNow;
+		var unix = new DateTimeOffset(now).ToUnixTimeSeconds();
+
+		// The packet is RemSound's: type 11, stream 0xFFFF, a 53-byte sealed payload.
+		var packet = RemTickProof.BuildPacket(key, instance, unix, 7);
+		Expect(packet.Length == RemPacket.HeaderSize + RemTickProof.SealedPayloadBytes,
+			"A tick proof packet is not header plus 53 bytes.");
+		Expect(RemPacket.TryReadHeader(packet, out var type, out var streamId, out _) &&
+			type == RemPacketType.TickProof && streamId == RemPacket.HeartbeatStreamId,
+			"A tick proof does not carry type 11 and stream 0xFFFF.");
+		var guard = new RemTickProofGuard();
+		Expect(guard.TryAccept(gcm, packet.AsSpan(RemPacket.HeaderSize), now, out var sender, out _) && sender == instance,
+			"A tick proof was refused, or named the wrong sender.");
+		// The same seal twice is a replay, however fresh.
+		Expect(!guard.TryAccept(gcm, packet.AsSpan(RemPacket.HeaderSize), now, out _, out var replay) && replay == "replayed",
+			"A replayed tick proof was accepted.");
+		// Eleven minutes old is outside the window RemSound allows.
+		var stale = RemTickProof.Seal(key, instance, unix - 11 * 60);
+		Expect(!new RemTickProofGuard().TryAccept(gcm, stale, now, out _, out var staleReason) && staleReason == "stale",
+			"A tick proof eleven minutes old was accepted.");
+		// Another password cannot open it, and that is the refusal a user acts on.
+		using var otherGcm = new AesGcm(RemCrypto.DeriveKey("other"), RemCrypto.TagBytes);
+		var fresh = RemTickProof.Seal(key, instance, unix);
+		Expect(!new RemTickProofGuard().TryAccept(otherGcm, fresh, now, out _, out var wrong) && wrong == RemTickProofGuard.NotOurPassword,
+			"A tick proof sealed with another password was accepted.");
+		var tampered = fresh.ToArray();
+		tampered[^1] ^= 1;
+		Expect(!new RemTickProofGuard().TryAccept(gcm, tampered, now, out _, out _),
+			"A tampered tick proof was accepted.");
+		Expect(!new RemTickProofGuard().TryAccept(gcm, fresh.AsSpan(0, 52), now, out _, out _),
+			"A truncated tick proof was accepted.");
+		// The identity inside is the GUID in the order its text form reads.
+		Expect(RemTickProof.TryUnseal(gcm, fresh, out var unsealed, out var unsealedTime, out _) &&
+			unsealed == instance && unsealedTime == unix, "A tick proof's identity or time was misread.");
+	}
+
+	private static void TestServerInfo()
+	{
+		// A server ping is group framing with our clock in it, nothing more.
+		var clientId = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
+		var pingPacket = RemGroupPacket.BuildServerPing(clientId, 123_456_789);
+		Expect(RemGroupPacket.TryReadHeader(pingPacket, out var pingType, out _, out _, out var pingId) &&
+			pingType == RemPacketType.ServerPing && pingId.SequenceEqual(clientId) &&
+			BinaryPrimitives.ReadInt64LittleEndian(pingPacket.AsSpan(RemGroupPacket.HeaderSize)) == 123_456_789,
+			"A server ping lost its type, sender or clock.");
+
+		// The status body, laid out exactly as RELAY-GROUPS.md §10 writes it.
+		var version = Encoding.ASCII.GetBytes("server-v2.17");
+		var body = new List<byte> { 1, (byte)version.Length };
+		body.AddRange(version);
+		void U32(uint value) { var b = new byte[4]; BinaryPrimitives.WriteUInt32LittleEndian(b, value); body.AddRange(b); }
+		void U16(ushort value) { var b = new byte[2]; BinaryPrimitives.WriteUInt16LittleEndian(b, value); body.AddRange(b); }
+		U32(3661); U16(4); U16(2); U16(60); U16(1); U32(12345); U32(12340); U16(3); U16(58);
+		var received = new DateTime(2026, 10, 18, 12, 0, 0, DateTimeKind.Utc);
+		Expect(RemServerInfo.TryRead(body.ToArray(), received, out var info), "A server status was refused.");
+		Expect(info.Version == "server-v2.17" && info.Uptime == TimeSpan.FromSeconds(3661) &&
+			info.People == 4 && info.Groups == 2 && info.PlacesFree == 60 && info.Phones == 1,
+			"A server status's version or counts were misread.");
+		// The longest gap arrives in microseconds and is read as milliseconds.
+		Expect(info.YourPackets == 12345 && Math.Abs(info.YourLongestGapMs - 12.34) < 0.001 &&
+			info.YourLongGaps == 3 && info.YourSeconds == 58, "A server status's arrival numbers were misread.");
+		var badLayout = body.ToArray();
+		badLayout[0] = 0;
+		Expect(!RemServerInfo.TryRead(badLayout, received, out _), "A server status with layout 0 was accepted.");
+		Expect(!RemServerInfo.TryRead(body.ToArray().AsSpan(0, body.Count - 1), received, out _),
+			"A truncated server status was accepted.");
+		var lying = body.ToArray();
+		lying[1] = 200;
+		Expect(!RemServerInfo.TryRead(lying, received, out _), "A server status whose version overruns the body was accepted.");
+
+		// Hear-myself tick lists: our own id first, the cap cannot push it out,
+		// and with the switch off the member's list passes through untouched.
+		var member = new byte[] { 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1 };
+		Expect(RemGroupPacket.EffectiveTicks(clientId, null, [], hearMyself: false) is null,
+			"With hear-myself off, 'everyone' stopped being the legacy no-list hello.");
+		var explicitList = new List<byte[]> { member };
+		Expect(RemGroupPacket.EffectiveTicks(clientId, explicitList, [], hearMyself: false)!.SequenceEqual(explicitList),
+			"With hear-myself off, an explicit tick list changed.");
+		var everyone = RemGroupPacket.EffectiveTicks(clientId, null, [member], hearMyself: true)!;
+		Expect(everyone.Count == 2 && everyone[0].SequenceEqual(clientId) && everyone[1].SequenceEqual(member),
+			"Hearing ourselves did not put our own id first, ahead of the roster.");
+		var chosen = RemGroupPacket.EffectiveTicks(clientId, explicitList, [], hearMyself: true)!;
+		Expect(chosen.Count == 2 && chosen[0].SequenceEqual(clientId) && chosen[1].SequenceEqual(member),
+			"Hearing ourselves with explicit ticks lost a chosen member.");
+		var dupes = RemGroupPacket.EffectiveTicks(clientId, [clientId, member], [], hearMyself: true)!;
+		Expect(dupes.Count == 2, "Our own id was named twice in one hello.");
+		var crowd = Enumerable.Range(0, 100).Select(i =>
+		{
+			var id = new byte[16];
+			id[0] = (byte)(i + 1);
+			return id;
+		}).ToList();
+		var capped = RemGroupPacket.EffectiveTicks(clientId, null, crowd, hearMyself: true)!;
+		Expect(capped.Count == RemGroupPacket.MaxTicked && capped[0].SequenceEqual(clientId),
+			"A crowded group's hello dropped our own id or overflowed the cap.");
+	}
+
+	private static void TestStreamClaims()
+	{
+		var device = new IPEndPoint(IPAddress.Parse("192.168.1.79"), 47830);
+		var laneA = (device, (ushort)1);
+		var laneB = (device, (ushort)2);
+		var otherDevice = (new IPEndPoint(IPAddress.Parse("192.168.1.80"), 47830), (ushort)1);
+		var halfSecond = TimeSpan.FromMilliseconds(500);
+		var justUnder = TimeSpan.FromMilliseconds(999);
+		var oneSecond = TimeSpan.FromSeconds(1);
+
+		Expect(RemSoundReceiver.ShouldClaim(null, laneA, TimeSpan.MaxValue), "No stream claimed an idle output.");
+		Expect(RemSoundReceiver.ShouldClaim(laneA, laneA, TimeSpan.Zero), "The playing stream lost its own claim.");
+		// A second lane from the same device does not steal the output mid-stream:
+		// both lanes into one decoder was time-sliced mush of the two.
+		Expect(!RemSoundReceiver.ShouldClaim(laneA, laneB, halfSecond), "A second lane stole the output from the first.");
+		Expect(!RemSoundReceiver.ShouldClaim(laneA, laneB, justUnder), "A second lane claimed before a second of silence.");
+		Expect(RemSoundReceiver.ShouldClaim(laneA, laneB, oneSecond), "A second lane never took over after the first went silent.");
+		Expect(!RemSoundReceiver.ShouldClaim(laneA, otherDevice, halfSecond), "Another device stole the output mid-stream.");
+		Expect(RemSoundReceiver.ShouldClaim(laneA, otherDevice, oneSecond), "Another device never took over after a second of silence.");
+	}
+
 	private static void TestPeerSpecs()
 	{
 		Expect(RemPeerSpec.TryParse("192.168.1.20", out var plain) && plain.Port == 47830, "A bare address did not default to port 47830.");
@@ -442,6 +568,10 @@ internal static class RemSoundSelfTestCases
 			// A subscriber needs nothing but the password: a phone can find it by itself.
 			var listener = HelperOptions.Parse(["--transport", "remsound", "--role", "subscriber", "--password-env", variable]);
 			Expect(listener.Peers.Count == 0, "A bare RemSound receiver was refused.");
+			Expect(!listener.HearMyself, "Hearing yourself was on without the flag.");
+			var hearer = HelperOptions.Parse(["--transport", "remsound", "--role", "duplex", "--password-env", variable,
+				"--relay", "relay.example.com", "--hear-myself"]);
+			Expect(hearer.HearMyself, "--hear-myself was not recognised.");
 
 			// The relay is one host; ticks are absent (everyone), empty (nobody), or a list.
 			var relayed = HelperOptions.Parse(["--transport", "remsound", "--role", "subscriber", "--password-env", variable,
