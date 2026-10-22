@@ -63,3 +63,17 @@ Add a check to `tools/selftest_addon.py` or `helper/HelperSelfTestCases.cs` for 
 4. Push the branch and create the matching `vX.Y.Z` GitHub release.
 5. Attach the `.nvda-addon` from `dist/` and use `RELEASE_NOTES.md` as the release notes.
 6. Verify the release asset and tag from GitHub after upload.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in this repo's GitHub Issues, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
