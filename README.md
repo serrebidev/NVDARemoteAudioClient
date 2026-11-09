@@ -32,7 +32,7 @@ A screen-reader-first NVDA add-on for sending live Windows audio between two com
 
 ## Download and install
 
-Grab `remoteAudioClient-X.Y.Z.nvda-addon` from the [Releases page](https://github.com/serrebidev/NVDARemoteAudioClient/releases), open it, and let NVDA install it. Install the same version on both computers, then restart NVDA.
+Grab `remoteAudioClient-X.Y.Z.nvda-addon` from the [Releases page](https://git.serrebiradio.com/serrebi/NVDARemoteAudioClient/releases), open it, and let NVDA install it. Install the same version on both computers, then restart NVDA.
 
 For the highlights in version 0.2.8, see the [release notes](RELEASE_NOTES.md).
 
@@ -174,4 +174,4 @@ MIT. See [LICENSE](LICENSE).
 
 ## Community and support
 
-Report bugs and request features in [Issues](https://github.com/serrebidev/NVDARemoteAudioClient/issues). For questions, feedback, and release news, join the [SerrebiProjects Telegram group](https://t.me/SerrebiProjects).
+Report bugs and request features in [Issues](https://git.serrebiradio.com/serrebi/NVDARemoteAudioClient/issues). For questions, feedback, and release news, join the [SerrebiProjects Telegram group](https://t.me/SerrebiProjects).

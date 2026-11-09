@@ -41,7 +41,7 @@ INSTALL_DIR_CANDIDATES = (
 	os.path.join(os.environ.get("LOCALAPPDATA", ""), "NVDARemoteAudioServer"),
 )
 
-USER_AGENT = "NVDARemoteAudioClient (+https://github.com/serrebidev/NVDARemoteAudioClient)"
+USER_AGENT = "NVDARemoteAudioClient (+https://git.serrebiradio.com/serrebi/NVDARemoteAudioClient)"
 
 FIREWALL_RULE_TCP = "NVDARemoteAudioServer (TCP)"
 FIREWALL_RULE_UDP = "NVDARemoteAudioServer (UDP)"

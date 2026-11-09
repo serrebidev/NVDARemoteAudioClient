@@ -1,5 +1,12 @@
 # NVDA Remote Audio Client release notes
 
+## 0.2.15
+
+### Forgejo migration
+
+- Releases, downloads, and issue tracking moved from GitHub to Forgejo: `https://git.serrebiradio.com/serrebi/NVDARemoteAudioClient`. The manifest URL, README links, release checklist, and server-installer user agent now point there.
+- No behavior change. The relay-server installer still fetches `NVDARemoteAudioServer` from its upstream GitHub releases, which this project does not own.
+
 ## 0.2.14
 
 ### RemSound parity: tick proofs, relay status, hear myself, and multi-lane senders

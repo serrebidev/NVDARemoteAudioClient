@@ -60,9 +60,9 @@ Add a check to `tools/selftest_addon.py` or `helper/HelperSelfTestCases.cs` for 
 1. Confirm the worktree contains only intended changes.
 2. Run the full validation sequence above before committing.
 3. Commit the reviewed source and documentation.
-4. Push the branch and create the matching `vX.Y.Z` GitHub release.
+4. Push the branch and create the matching `vX.Y.Z` Forgejo release.
 5. Attach the `.nvda-addon` from `dist/` and use `RELEASE_NOTES.md` as the release notes.
-6. Verify the release asset and tag from GitHub after upload.
+6. Verify the release asset and tag from Forgejo after upload.
 
 ## Agent skills
 
