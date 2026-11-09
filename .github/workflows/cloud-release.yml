@@ -2,7 +2,8 @@ name: Cloud Release
 
 # Cloud release pipeline. dry_run=true (default) builds everything and uploads
 # the artifact, publishing nothing. dry_run=false builds and publishes a
-# GitHub release.
+# Forgejo release (tag push plus the Forgejo releases API; needs a
+# FORGEJO_TOKEN secret with release scope).
 #   gh workflow run cloud-release.yml -f dry_run=true
 #   gh workflow run cloud-release.yml -f dry_run=false
 
@@ -45,11 +46,48 @@ jobs:
           name: addon-${{ steps.version.outputs.version }}
           path: |
             dist/*.nvda-addon
-      - name: Publish release
+      - name: Publish release (Forgejo)
         if: ${{ !inputs.dry_run }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: v${{ steps.version.outputs.version }}
-          files: |
-            dist/*.nvda-addon
+        shell: powershell
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          FORGEJO_REPO: serrebi/NVDARemoteAudioClient
+          TAG: v${{ steps.version.outputs.version }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $api = "https://git.serrebiradio.com/api/v1/repos/$env:FORGEJO_REPO"
+          if (-not $env:FORGEJO_TOKEN) { throw 'FORGEJO_TOKEN secret is not set.' }
+          $auth = @{ Authorization = "token $($env:FORGEJO_TOKEN)" }
+          & git tag -f $env:TAG $env:TARGET_SHA
+          if ($LASTEXITCODE -ne 0) { throw "git tag $($env:TAG) failed." }
+          & git push "https://x-access-token:$($env:FORGEJO_TOKEN)@git.serrebiradio.com/$($env:FORGEJO_REPO).git" $env:TAG
+          if ($LASTEXITCODE -ne 0) { throw "git push of $($env:TAG) to Forgejo failed." }
+          $release = try {
+            Invoke-RestMethod -Uri "$api/releases/tags/$($env:TAG)" -Headers $auth -Method Get
+          } catch { $null }
+          if (-not $release -or -not $release.id) {
+            $create = @{ tag_name = $env:TAG; name = $env:TAG; draft = $true } | ConvertTo-Json
+            $release = Invoke-RestMethod -Uri "$api/releases" -Headers $auth -Method Post -Body $create -ContentType 'application/json'
+            if (-not $release.id) { throw "Could not create the Forgejo release for $($env:TAG)." }
+          }
+          $files = @(Get-ChildItem 'dist/*.nvda-addon' -ErrorAction SilentlyContinue)
+          if ($files.Count -eq 0) { throw 'Nothing to upload in dist/.' }
+          foreach ($file in $files) {
+            $asset = @($release.assets | Where-Object { $_.name -eq $file.Name }) | Select-Object -First 1
+            if ($asset) {
+              Write-Output "Replacing $($file.Name) on $($env:TAG)..."
+              & curl.exe -sS -X DELETE -H "Authorization: token $($env:FORGEJO_TOKEN)" `
+                "$api/releases/$($release.id)/assets/$($asset.id)" | Out-Null
+              if ($LASTEXITCODE -ne 0) { throw "Deleting $($file.Name) from $($env:TAG) failed." }
+            } else {
+              Write-Output "Uploading $($file.Name) to $($env:TAG)..."
+            }
+            & curl.exe -sS -H "Authorization: token $($env:FORGEJO_TOKEN)" `
+              -F "attachment=@$($file.FullName)" `
+              "$api/releases/$($release.id)/assets?name=$($file.Name)" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Upload of $($file.Name) failed." }
+          }
+          Invoke-RestMethod -Uri "$api/releases/$($release.id)" -Headers $auth -Method Patch `
+            -Body '{"draft":false}' -ContentType 'application/json' | Out-Null
+          Write-Output "Published $($env:TAG) on Forgejo."
