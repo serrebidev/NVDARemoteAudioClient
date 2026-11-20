@@ -1,0 +1,12 @@
+name: CI (disabled on Forgejo)
+# Checks for this repo run on GitHub runners (Brandon, 2026-11-20).
+# This file shadows .github/workflows/ci.yml on Forgejo only;
+# GitHub ignores .forgejo/ and runs the real checks.
+on: workflow_dispatch
+jobs:
+  disabled-on-forgejo:
+    name: Disabled on Forgejo
+    runs-on: ubuntu-latest
+    if: false
+    steps:
+      - run: echo "Checks run on GitHub runners. Forgejo copy disabled 2026-11-20."
